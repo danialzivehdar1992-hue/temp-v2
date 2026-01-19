@@ -142,7 +142,7 @@ contract AliasResolver is ERC165, IERC7996, ResolverCaller, ICompositeResolver {
         bytes10 prefix;
         address impl;
         assembly {
-            extcodecopy(address(), 0, 0, 40)
+            extcodecopy(address(), 0, 0, 30)
             prefix := mload(0)
             impl := shr(96, mload(10))
         }

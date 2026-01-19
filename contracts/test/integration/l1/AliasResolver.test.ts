@@ -55,13 +55,13 @@ async function fixture() {
   return { mainnetV1, mainnetV2, aliasResolver, ssResolver, createAlias };
   async function createAlias({
     name = undefined,
-    resolver = zeroAddress,
+    resolverAddress = zeroAddress,
   }: {
     name?: string;
-    resolver?: Address;
+    resolverAddress?: Address;
   }) {
     const hash = await aliasResolver.write.createAlias([
-      resolver,
+      resolverAddress,
       name === undefined ? "0x" : dnsEncodeName(name),
     ]);
     const receipt = await waitForSuccessfulTransactionReceipt(
@@ -115,7 +115,7 @@ describe("AliasResolver", () => {
     it("no name", async () => {
       const F = await network.networkHelpers.loadFixture(fixture);
       const aliasResolver = await F.createAlias({
-        resolver: F.ssResolver.address,
+        resolverAddress: F.ssResolver.address,
       });
       const [resolver, name] = await aliasResolver.read.getAlias();
       expectVar({ resolver }).toStrictEqual(getAddress(F.ssResolver.address));
@@ -126,7 +126,7 @@ describe("AliasResolver", () => {
       const F = await network.networkHelpers.loadFixture(fixture);
       const aliasResolver = await F.createAlias({
         name: KP.name,
-        resolver: F.ssResolver.address,
+        resolverAddress: F.ssResolver.address,
       });
       const [resolver, name] = await aliasResolver.read.getAlias();
       expectVar({ resolver }).toStrictEqual(getAddress(F.ssResolver.address));
@@ -135,13 +135,33 @@ describe("AliasResolver", () => {
   });
 
   // TODO: more cases
-  it("alias", async () => {
+  it("mounted alias", async () => {
     const F = await network.networkHelpers.loadFixture(fixture);
     const { dedicatedResolver } = await F.mainnetV2.setupName(KP);
     await dedicatedResolver.write.multicall([
       [bundleCalls(makeResolutions(KP)).writeDedicated],
     ]);
     const aliasResolver = await F.createAlias(KP);
+    const kp: KnownProfile = { ...KP, name: "alias.eth" };
+    await F.mainnetV2.setupName({
+      name: kp.name,
+      resolverAddress: aliasResolver.address,
+    });
+    const res = bundleCalls(makeResolutions(kp));
+    res.expect(
+      await aliasResolver.read.resolve([dnsEncodeName(kp.name), res.call]),
+    );
+  });
+
+  it("unmounted alias", async () => {
+    const F = await network.networkHelpers.loadFixture(fixture);
+    const dedicatedResolver = await F.mainnetV2.deployDedicatedResolver();
+    await dedicatedResolver.write.multicall([
+      [bundleCalls(makeResolutions(KP)).writeDedicated],
+    ]);
+    const aliasResolver = await F.createAlias({
+      resolverAddress: dedicatedResolver.address,
+    });
     const kp: KnownProfile = { ...KP, name: "alias.eth" };
     await F.mainnetV2.setupName({
       name: kp.name,

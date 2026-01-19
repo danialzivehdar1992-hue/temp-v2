@@ -54,7 +54,7 @@ async function fixture() {
   );
   return { mainnetV1, mainnetV2, aliasResolver, ssResolver, createAlias };
   async function createAlias({
-    name = "",
+    name = undefined,
     resolver = zeroAddress,
   }: {
     name?: string;
@@ -62,7 +62,7 @@ async function fixture() {
   }) {
     const hash = await aliasResolver.write.createAlias([
       resolver,
-      dnsEncodeName(name),
+      name === undefined ? "0x" : dnsEncodeName(name),
     ]);
     const receipt = await waitForSuccessfulTransactionReceipt(
       mainnetV2.walletClient,
@@ -70,7 +70,7 @@ async function fixture() {
     );
     const [log] = parseEventLogs({
       abi: aliasResolver.abi,
-      eventName: "Aliased",
+      eventName: "AliasCreated",
       logs: receipt.logs,
     });
     return getContract({
@@ -101,15 +101,37 @@ describe("AliasResolver", () => {
     },
   });
 
-  it("getAlias()", async () => {
-    const F = await network.networkHelpers.loadFixture(fixture);
-    const aliasResolver = await F.createAlias({
-      name: KP.name,
-      resolver: F.ssResolver.address,
+  describe("getAlias()", () => {
+    it("no resolver", async () => {
+      const F = await network.networkHelpers.loadFixture(fixture);
+      const aliasResolver = await F.createAlias({
+        name: KP.name,
+      });
+      const [resolver, name] = await aliasResolver.read.getAlias();
+      expectVar({ resolver }).toStrictEqual(zeroAddress);
+      expectVar({ name }).toStrictEqual(dnsEncodeName(KP.name));
     });
-    const [resolver, name] = await aliasResolver.read.getAlias();
-    expectVar({ resolver }).toStrictEqual(getAddress(F.ssResolver.address));
-    expectVar({ name }).toStrictEqual(dnsEncodeName(KP.name));
+
+    it("no name", async () => {
+      const F = await network.networkHelpers.loadFixture(fixture);
+      const aliasResolver = await F.createAlias({
+        resolver: F.ssResolver.address,
+      });
+      const [resolver, name] = await aliasResolver.read.getAlias();
+      expectVar({ resolver }).toStrictEqual(getAddress(F.ssResolver.address));
+      expectVar({ name }).toStrictEqual("0x");
+    });
+
+    it("both", async () => {
+      const F = await network.networkHelpers.loadFixture(fixture);
+      const aliasResolver = await F.createAlias({
+        name: KP.name,
+        resolver: F.ssResolver.address,
+      });
+      const [resolver, name] = await aliasResolver.read.getAlias();
+      expectVar({ resolver }).toStrictEqual(getAddress(F.ssResolver.address));
+      expectVar({ name }).toStrictEqual(dnsEncodeName(KP.name));
+    });
   });
 
   // TODO: more cases

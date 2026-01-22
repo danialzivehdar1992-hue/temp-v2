@@ -220,7 +220,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
     ///
     ///         ---
     ///         Validator: {validatorAddress}
-    ///         Nonce: {nonce}
     ///         ```
     ///
     /// @param claim The name claim data.
@@ -233,7 +232,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
         string memory name = claim.name;
         string memory addrString = LibString.toChecksumHexString(claim.addr);
         string memory expiresAtString = LibISO8601.toISO8601(claim.expirationTime);
-        string memory nonceString = LibString.toString(claim.nonce);
 
         // Cache immutables for assembly access
         bytes32 validatorPart1 = _VALIDATOR_ADDR_PART1;
@@ -304,15 +302,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
             mstore(add(ptr, 32), validatorPart2)
             ptr := add(ptr, 42)
 
-            // "\nNonce: " (8 bytes)
-            mstore(ptr, 0x0a4e6f6e63653a20000000000000000000000000000000000000000000000000)
-            ptr := add(ptr, 8)
-
-            // Copy nonceString (variable length)
-            let nonceLen := mload(nonceString)
-            _memcpy(ptr, add(nonceString, 32), nonceLen)
-            ptr := add(ptr, nonceLen)
-
             // Store final message length and update free memory pointer
             mstore(message, sub(ptr, add(message, 32)))
             mstore(0x40, ptr)
@@ -335,7 +324,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
     ///
     ///         ---
     ///         Validator: {validatorAddress}
-    ///         Nonce: {nonce}
     ///         ```
     ///
     /// @param claim The name claim data.
@@ -351,7 +339,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
         string memory addrString = LibString.toChecksumHexString(claim.addr);
         string memory ownerString = LibString.toChecksumHexString(owner);
         string memory expiresAtString = LibISO8601.toISO8601(claim.expirationTime);
-        string memory nonceString = LibString.toString(claim.nonce);
 
         // Cache immutables for assembly access
         bytes32 validatorPart1 = _VALIDATOR_ADDR_PART1;
@@ -429,15 +416,6 @@ contract L2ReverseRegistrar is IL2ReverseRegistrar, ERC165, StandaloneReverseReg
             mstore(ptr, validatorPart1)
             mstore(add(ptr, 32), validatorPart2)
             ptr := add(ptr, 42)
-
-            // "\nNonce: " (8 bytes)
-            mstore(ptr, 0x0a4e6f6e63653a20000000000000000000000000000000000000000000000000)
-            ptr := add(ptr, 8)
-
-            // Copy nonceString (variable length)
-            let nonceLen := mload(nonceString)
-            _memcpy(ptr, add(nonceString, 32), nonceLen)
-            ptr := add(ptr, nonceLen)
 
             // Store final message length and update free memory pointer
             mstore(message, sub(ptr, add(message, 32)))

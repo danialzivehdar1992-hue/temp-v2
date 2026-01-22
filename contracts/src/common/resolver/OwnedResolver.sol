@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.13;
+pragma solidity ^0.8.24;
+
+import {console} from "forge-std/console.sol";
 
 import {IMulticallable} from "@ens/contracts/resolvers/IMulticallable.sol";
 import {IABIResolver} from "@ens/contracts/resolvers/profiles/IABIResolver.sol";
 import {IAddressResolver} from "@ens/contracts/resolvers/profiles/IAddressResolver.sol";
 import {IAddrResolver} from "@ens/contracts/resolvers/profiles/IAddrResolver.sol";
 import {IContentHashResolver} from "@ens/contracts/resolvers/profiles/IContentHashResolver.sol";
+import {IExtendedResolver} from "@ens/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {IHasAddressResolver} from "@ens/contracts/resolvers/profiles/IHasAddressResolver.sol";
 import {IInterfaceResolver} from "@ens/contracts/resolvers/profiles/IInterfaceResolver.sol";
 import {INameResolver} from "@ens/contracts/resolvers/profiles/INameResolver.sol";
 import {IPubkeyResolver} from "@ens/contracts/resolvers/profiles/IPubkeyResolver.sol";
 import {ITextResolver} from "@ens/contracts/resolvers/profiles/ITextResolver.sol";
 import {ENSIP19, COIN_TYPE_ETH, COIN_TYPE_DEFAULT} from "@ens/contracts/utils/ENSIP19.sol";
+import {NameCoder} from "@ens/contracts/utils/NameCoder.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {ContextUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol";
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
@@ -25,12 +29,29 @@ import {HCAEquivalence} from "../hca/HCAEquivalence.sol";
 import {IHCAFactoryBasic} from "../hca/interfaces/IHCAFactoryBasic.sol";
 
 import {OwnedResolverLib} from "./libraries/OwnedResolverLib.sol";
+import {ResolverProfileRewriterLib} from "./libraries/ResolverProfileRewriterLib.sol";
 
 /// @notice An owned resolver that supports multiple names and internal aliasing.
+///
+/// Resolved names find the longest match and rewrites the name accordingly.
+/// Successful matches recursively check for additional aliasing.
+/// Stops if the same alias applies twice.
+/// Circular references result in OOG.
+///
+/// 1. Rewrite: `setAlias("a.eth", "b.eth")`
+///    eg. `getAlias("a.eth") => "b.eth"`
+///    eg. `getAlias("sub.a.eth") => "sub.b.eth"`
+///    eg. `getAlias("x.eth") => ""
+///
+/// 2. Replace: `setAlias("com", ".c.eth")`
+///    eg. `getAlias("abc.com") => "c.eth"`
+///    eg. `getAlias("x.y.com") => "c.eth"`
+///
 contract OwnedResolver is
     HCAContextUpgradeable,
     UUPSUpgradeable,
     EnhancedAccessControl,
+    IExtendedResolver,
     IMulticallable,
     IABIResolver,
     IAddrResolver,
@@ -48,7 +69,7 @@ contract OwnedResolver is
 
     event VersionChanged(bytes32 indexed node, uint256 newVersion);
 
-    event AliasChanged(bytes32 indexed node, bytes32 indexed target);
+    event AliasChanged(bytes indexed fromName, bytes indexed toName);
 
     ////////////////////////////////////////////////////////////////////////
     // Errors
@@ -100,6 +121,7 @@ contract OwnedResolver is
         bytes4 interfaceId
     ) public view virtual override(EnhancedAccessControl) returns (bool) {
         return
+            type(IExtendedResolver).interfaceId == interfaceId ||
             type(IMulticallable).interfaceId == interfaceId ||
             type(IABIResolver).interfaceId == interfaceId ||
             type(IAddrResolver).interfaceId == interfaceId ||
@@ -136,17 +158,18 @@ contract OwnedResolver is
         emit VersionChanged(node, version);
     }
 
-    /// @notice Make `node` use the records of `target`.
-    ///         Use `bytes32(0)` to clear.
+    /// @notice Create an alias from `fromName` to `toName`.
+    /// @param fromName The source DNS-encoded name.
+    /// @param toName The destination DNS-encoded name.
     function setAlias(
-        bytes32 node,
-        bytes32 target
+        bytes calldata fromName,
+        bytes calldata toName
     ) external onlyRootRoles(OwnedResolverLib.ROLE_ALIAS) {
-        _storage().aliases[node] = target;
-        emit AliasChanged(node, target);
+        _storage().aliases[NameCoder.namehash(fromName, 0)] = toName;
+        emit AliasChanged(fromName, toName);
     }
 
-    /// @notice Sets the ABI associated of the associated ENS node.
+    /// @notice Set ABI data of the associated ENS node.
     /// @param node The node to update.
     /// @param contentType The content type of the ABI.
     /// @param data The ABI data.
@@ -158,7 +181,7 @@ contract OwnedResolver is
         if (!_isPowerOf2(contentType)) {
             revert InvalidContentType(contentType);
         }
-        _record(node, false).abis[contentType] = data;
+        _record(node).abis[contentType] = data;
         emit ABIChanged(node, contentType);
     }
 
@@ -177,7 +200,7 @@ contract OwnedResolver is
         bytes32 node,
         bytes calldata hash
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_CONTENTHASH) {
-        _record(node, false).contenthash = hash;
+        _record(node).contenthash = hash;
         emit ContenthashChanged(node, hash);
     }
 
@@ -190,7 +213,7 @@ contract OwnedResolver is
         bytes4 interfaceId,
         address implementer
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_INTERFACE) {
-        _record(node, false).interfaces[interfaceId] = implementer;
+        _record(node).interfaces[interfaceId] = implementer;
         emit InterfaceChanged(node, interfaceId, implementer);
     }
 
@@ -203,17 +226,17 @@ contract OwnedResolver is
         bytes32 x,
         bytes32 y
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_PUBKEY) {
-        _record(node, false).pubkey = [x, y];
+        _record(node).pubkey = [x, y];
         emit PubkeyChanged(node, x, y);
     }
 
-    /// @notice Set the name associated with an ENS node, for reverse records.
+    /// @notice Set the name of the associated ENS node.
     /// @param node The node to update.
     function setName(
         bytes32 node,
         string calldata name_
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_NAME) {
-        _record(node, false).name = name_;
+        _record(node).name = name_;
         emit NameChanged(node, name_);
     }
 
@@ -229,7 +252,7 @@ contract OwnedResolver is
         external
         onlyPartRoles(node, OwnedResolverLib.partForTextKey(key), OwnedResolverLib.ROLE_SET_TEXT)
     {
-        _record(node, false).texts[key] = value;
+        _record(node).texts[key] = value;
         emit TextChanged(node, key, key, value);
     }
 
@@ -243,13 +266,51 @@ contract OwnedResolver is
         return multicall(calls);
     }
 
+    /// @notice Determine which name is queried when `fromName` is resolved.
+    /// @param fromName The DNS-encoded name.
+    /// @return toName The DNS-encoded alias or null if not aliased.
+    function getAlias(bytes memory fromName) public view returns (bytes memory toName) {
+        bytes32 prev;
+        for (;;) {
+            bytes memory aliasName;
+            (aliasName, fromName) = _getAlias(fromName);
+            if (fromName.length == 0) break;
+            bytes32 next = keccak256(aliasName);
+            if (next == prev) break;
+            toName = fromName;
+            prev = next;
+        }
+    }
+
+    /// @inheritdoc IExtendedResolver
+    function resolve(
+        bytes calldata fromName,
+        bytes calldata data
+    ) external view returns (bytes memory) {
+        bytes memory toName = getAlias(fromName);
+        (bool ok, bytes memory v) = address(this).staticcall(
+            ResolverProfileRewriterLib.replaceNode(
+                data,
+                NameCoder.namehash(toName.length == 0 ? fromName : toName, 0)
+            )
+        );
+        if (!ok) {
+            assembly {
+                revert(add(v, 32), mload(v))
+            }
+        } else if (v.length == 0) {
+            revert UnsupportedResolverProfile(bytes4(data));
+        }
+        return v;
+    }
+
     /// @inheritdoc IABIResolver
     // solhint-disable-next-line func-name-mixedcase
     function ABI(
         bytes32 node,
         uint256 contentTypes
     ) external view returns (uint256 contentType, bytes memory data) {
-        OwnedResolverLib.Record storage R = _record(node, true);
+        OwnedResolverLib.Record storage R = _record(node);
         for (contentType = 1; contentType > 0 && contentType <= contentTypes; contentType <<= 1) {
             if ((contentType & contentTypes) != 0) {
                 data = R.abis[contentType];
@@ -263,12 +324,12 @@ contract OwnedResolver is
 
     /// @inheritdoc IHasAddressResolver
     function hasAddr(bytes32 node, uint256 coinType) external view returns (bool) {
-        return _record(node, true).addresses[coinType].length > 0;
+        return _record(node).addresses[coinType].length > 0;
     }
 
     /// @inheritdoc IContentHashResolver
     function contenthash(bytes32 node) external view returns (bytes memory) {
-        return _record(node, true).contenthash;
+        return _record(node).contenthash;
     }
 
     /// @inheritdoc IInterfaceResolver
@@ -276,7 +337,7 @@ contract OwnedResolver is
         bytes32 node,
         bytes4 interfaceId
     ) external view returns (address implementer) {
-        implementer = _record(node, true).interfaces[interfaceId];
+        implementer = _record(node).interfaces[interfaceId];
         if (implementer == address(0) && ERC165Checker.supportsInterface(addr(node), interfaceId)) {
             implementer = address(this);
         }
@@ -284,19 +345,19 @@ contract OwnedResolver is
 
     /// @inheritdoc INameResolver
     function name(bytes32 node) external view returns (string memory) {
-        return _record(node, true).name;
+        return _record(node).name;
     }
 
     /// @inheritdoc IPubkeyResolver
     function pubkey(bytes32 node) external view returns (bytes32 x, bytes32 y) {
-        OwnedResolverLib.Record storage R = _record(node, true);
+        OwnedResolverLib.Record storage R = _record(node);
         x = R.pubkey[0];
         y = R.pubkey[1];
     }
 
     /// @inheritdoc ITextResolver
     function text(bytes32 node, string calldata key) external view returns (string memory) {
-        return _record(node, true).texts[key];
+        return _record(node).texts[key];
     }
 
     /// @notice Perform multiple read or write operations.
@@ -337,7 +398,7 @@ contract OwnedResolver is
         ) {
             revert InvalidEVMAddress(addressBytes);
         }
-        _record(node, false).addresses[coinType] = addressBytes;
+        _record(node).addresses[coinType] = addressBytes;
         emit AddressChanged(node, coinType, addressBytes);
         if (coinType == COIN_TYPE_ETH) {
             emit AddrChanged(node, address(bytes20(addressBytes)));
@@ -346,7 +407,7 @@ contract OwnedResolver is
 
     /// @inheritdoc IAddressResolver
     function addr(bytes32 node, uint256 coinType) public view returns (bytes memory addressBytes) {
-        OwnedResolverLib.Record storage R = _record(node, true);
+        OwnedResolverLib.Record storage R = _record(node);
         addressBytes = R.addresses[coinType];
         if (addressBytes.length == 0 && ENSIP19.chainFromCoinType(coinType) > 0) {
             addressBytes = R.addresses[COIN_TYPE_DEFAULT];
@@ -399,19 +460,53 @@ contract OwnedResolver is
         return 0;
     }
 
-    /// @dev Access record storage pointer.
-    /// @param checkAlias If `true`, returns aliased record (if it exists).
-    function _record(
-        bytes32 node,
-        bool checkAlias
-    ) internal view returns (OwnedResolverLib.Record storage R) {
-        OwnedResolverLib.Storage storage S = _storage();
-        if (checkAlias) {
-            bytes32 target = S.aliases[node];
-            if (target != bytes32(0)) {
-                node = target;
+    /// @dev Apply one round of aliasing.
+    /// @return aliasName The alias that matched or null if no match.
+    /// @return toName The new DNS-encoded name or null if no match.
+    function _getAlias(
+        bytes memory fromName
+    ) internal view returns (bytes memory aliasName, bytes memory toName) {
+        uint256 offset;
+        (aliasName, offset, ) = _findAlias(fromName, 0);
+        if (aliasName.length > 0) {
+            if (aliasName.length > 1 && aliasName[0] == 0) {
+                assembly {
+                    // drop first char
+                    mstore(add(aliasName, 1), sub(mload(aliasName), 1))
+                    toName := add(aliasName, 1)
+                }
+            } else if (offset > 0) {
+                toName = new bytes(offset + aliasName.length);
+                assembly {
+                    mcopy(add(toName, 32), add(fromName, 32), offset) // copy prefix
+                    mcopy(add(toName, add(32, offset)), add(aliasName, 32), mload(aliasName)) // copy suffix
+                }
+            } else {
+                toName = aliasName;
             }
         }
+    }
+
+    /// @dev Recursive algorithm for efficiently computing suffix match.
+    function _findAlias(
+        bytes memory name_,
+        uint256 offset
+    ) internal view returns (bytes memory suffixName, uint256 prefixOffset, bytes32 node) {
+        if (offset + 1 < name_.length) {
+            (bytes32 labelhash, uint256 next) = NameCoder.readLabel(name_, offset);
+            (suffixName, prefixOffset, node) = _findAlias(name_, next);
+            node = NameCoder.namehash(node, labelhash);
+        }
+        bytes memory suffix = _storage().aliases[node];
+        if (suffix.length > 0) {
+            suffixName = suffix;
+            prefixOffset = offset;
+        }
+    }
+
+    /// @dev Access record storage pointer.
+    function _record(bytes32 node) internal view returns (OwnedResolverLib.Record storage R) {
+        OwnedResolverLib.Storage storage S = _storage();
         return S.records[node][S.versions[node]];
     }
 

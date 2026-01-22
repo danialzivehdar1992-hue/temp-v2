@@ -10,12 +10,14 @@ import {IABIResolver} from "@ens/contracts/resolvers/profiles/IABIResolver.sol";
 import {IAddressResolver} from "@ens/contracts/resolvers/profiles/IAddressResolver.sol";
 import {IAddrResolver} from "@ens/contracts/resolvers/profiles/IAddrResolver.sol";
 import {IContentHashResolver} from "@ens/contracts/resolvers/profiles/IContentHashResolver.sol";
+import {IExtendedResolver} from "@ens/contracts/resolvers/profiles/IExtendedResolver.sol";
 import {IHasAddressResolver} from "@ens/contracts/resolvers/profiles/IHasAddressResolver.sol";
 import {IInterfaceResolver} from "@ens/contracts/resolvers/profiles/IInterfaceResolver.sol";
 import {INameResolver} from "@ens/contracts/resolvers/profiles/INameResolver.sol";
 import {IPubkeyResolver} from "@ens/contracts/resolvers/profiles/IPubkeyResolver.sol";
 import {ITextResolver} from "@ens/contracts/resolvers/profiles/ITextResolver.sol";
 import {ResolverFeatures} from "@ens/contracts/resolvers/ResolverFeatures.sol";
+import {NameCoder} from "@ens/contracts/utils/NameCoder.sol";
 import {ENSIP19, COIN_TYPE_ETH, COIN_TYPE_DEFAULT} from "@ens/contracts/utils/ENSIP19.sol";
 import {VerifiableFactory} from "@ensdomains/verifiable-factory/VerifiableFactory.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -38,7 +40,8 @@ contract OwnedResolverTest is Test {
     }
     function _supportedInterfaces() internal pure returns (I[] memory v) {
         uint256 i;
-        v = new I[](12);
+        v = new I[](13);
+        v[i++] = I(type(IExtendedResolver).interfaceId, "IExtendedResolver");
         v[i++] = I(type(IMulticallable).interfaceId, "IMulticallable");
         v[i++] = I(type(IABIResolver).interfaceId, "IABIResolver");
         v[i++] = I(type(IAddrResolver).interfaceId, "IAddrResolver");
@@ -60,8 +63,7 @@ contract OwnedResolverTest is Test {
     address owner = makeAddr("owner");
     address friend = makeAddr("friend");
 
-    string testName = "test.eth";
-    bytes32 testNode = keccak256(bytes(testName)); // hash type doesn't matter
+    bytes testName = "\x04test\x03eth\x00";
     address testAddr = 0x8000000000000000000000000000000000000001;
     bytes testAddress = abi.encodePacked(testAddr);
 
@@ -84,7 +86,10 @@ contract OwnedResolverTest is Test {
         MockUpgrade upgrade = new MockUpgrade();
         vm.prank(owner);
         resolver.upgradeToAndCall(address(upgrade), "");
-        assertEq(resolver.addr(testNode), upgrade.addr(testNode));
+        assertEq(
+            resolver.addr(NameCoder.namehash(testName, 0)),
+            upgrade.addr(NameCoder.namehash(testName, 0))
+        );
     }
 
     function test_upgrade_noRole() external {
@@ -146,20 +151,141 @@ contract OwnedResolverTest is Test {
         resolver.revokeRootRoles(OwnedResolverLib.ROLE_SET_ADDR_ADMIN, owner);
     }
 
-    function test_setAlias() external {
-        bytes32 otherNode = keccak256("other");
+    function test_getAlias_noMatch() external view {
+        assertEq(resolver.getAlias(testName), "");
+        assertEq(resolver.getAlias(NameCoder.encode("")), "");
+        assertEq(resolver.getAlias(NameCoder.encode("xyz")), "");
+    }
+
+    function test_setAlias_root() external {
+        vm.prank(owner);
+        resolver.setAlias(NameCoder.encode(""), testName);
+
+        assertEq(resolver.getAlias(NameCoder.encode("")), testName, "root");
+        assertEq(
+            resolver.getAlias(NameCoder.encode("sub")),
+            NameCoder.addLabel(testName, "sub"),
+            "sub"
+        );
+    }
+
+    function test_setAlias_wildcardRoot() external {
+        vm.prank(owner);
+        resolver.setAlias(NameCoder.encode(""), bytes.concat(hex"00", testName));
+
+        assertEq(resolver.getAlias(NameCoder.encode("")), testName, "exact");
+        assertEq(resolver.getAlias(NameCoder.encode("sub")), testName, "sub");
+        assertEq(resolver.getAlias(NameCoder.encode("x.y")), testName, "x.y");
+    }
+
+    function test_setAlias_wildcardSubdomain() external {
+        vm.prank(owner);
+        resolver.setAlias(NameCoder.encode("a"), bytes.concat(hex"00", testName));
+
+        assertEq(resolver.getAlias(NameCoder.encode("")), "", "root");
+        assertEq(resolver.getAlias(NameCoder.encode("a")), testName, "exact");
+        assertEq(resolver.getAlias(NameCoder.encode("sub.a")), testName, "sub");
+        assertEq(resolver.getAlias(NameCoder.encode("x.y.a")), testName, "x.y");
+    }
+
+    function test_setAlias_exactMatch() external {
+        bytes memory otherName = NameCoder.encode("other.eth");
 
         vm.startPrank(owner);
-        resolver.setAlias(otherNode, testNode);
-        resolver.setAddr(testNode, COIN_TYPE_ETH, testAddress);
+        resolver.setAlias(otherName, testName);
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, testAddress);
         vm.stopPrank();
 
-        assertEq(resolver.addr(otherNode, COIN_TYPE_ETH), testAddress, "before");
+        assertEq(resolver.getAlias(otherName), testName, "alias");
+
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(testAddress),
+            "aliased"
+        );
 
         vm.prank(owner);
-        resolver.setAlias(otherNode, bytes32(0));
+        resolver.setAlias(otherName, "");
 
-        assertEq(resolver.addr(otherNode, COIN_TYPE_ETH), "", "after");
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(""),
+            "cleared"
+        );
+    }
+
+    function test_setAlias_subdomain() external {
+        bytes memory otherName = NameCoder.encode("test.com");
+        bytes memory fromName = NameCoder.encode("com");
+        bytes memory toName = NameCoder.encode("eth");
+
+        vm.startPrank(owner);
+        resolver.setAlias(fromName, toName);
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, testAddress);
+        vm.stopPrank();
+
+        assertEq(resolver.getAlias(fromName), toName, "alias");
+        assertEq(resolver.getAlias(otherName), testName, "subalias");
+
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(testAddress),
+            "aliased"
+        );
+
+        vm.prank(owner);
+        resolver.setAlias(fromName, "");
+
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(""),
+            "cleared"
+        );
+    }
+
+    function test_setAlias_double() external {
+        bytes memory otherName = NameCoder.encode("test.ens.xyz");
+
+        vm.startPrank(owner);
+        resolver.setAlias(NameCoder.encode("ens.xyz"), NameCoder.encode("com"));
+        resolver.setAlias(NameCoder.encode("com"), NameCoder.encode("eth"));
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, testAddress);
+        vm.stopPrank();
+
+        assertEq(resolver.getAlias(otherName), testName, "alias");
+
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(testAddress),
+            "aliased"
+        );
+
+        vm.prank(owner);
+        resolver.setAlias(NameCoder.encode("ens.xyz"), "");
+
+        assertEq(
+            resolver.resolve(
+                otherName,
+                abi.encodeCall(IAddressResolver.addr, (bytes32(0), COIN_TYPE_ETH))
+            ),
+            abi.encode(""),
+            "cleared"
+        );
     }
 
     function test_setAddr(uint256 coinType, bytes memory addressBytes) external {
@@ -167,9 +293,9 @@ contract OwnedResolverTest is Test {
             addressBytes = vm.randomBool() ? vm.randomBytes(20) : new bytes(0);
         }
         vm.prank(owner);
-        resolver.setAddr(testNode, coinType, addressBytes);
+        resolver.setAddr(NameCoder.namehash(testName, 0), coinType, addressBytes);
 
-        assertEq(resolver.addr(testNode, coinType), addressBytes);
+        assertEq(resolver.addr(NameCoder.namehash(testName, 0), coinType), addressBytes);
     }
 
     function test_setAddr_fallback(uint32 chain) external {
@@ -177,41 +303,60 @@ contract OwnedResolverTest is Test {
         bytes memory a = vm.randomBytes(20);
 
         vm.prank(owner);
-        resolver.setAddr(testNode, COIN_TYPE_DEFAULT, a);
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_DEFAULT, a);
 
         assertEq(
-            resolver.addr(testNode, chain == 1 ? COIN_TYPE_ETH : COIN_TYPE_DEFAULT | chain),
+            resolver.addr(
+                NameCoder.namehash(testName, 0),
+                chain == 1 ? COIN_TYPE_ETH : COIN_TYPE_DEFAULT | chain
+            ),
             a
         );
     }
 
     function test_setAddr_zeroEVM() external {
         vm.prank(owner);
-        resolver.setAddr(testNode, COIN_TYPE_ETH, abi.encodePacked(address(0)));
+        resolver.setAddr(
+            NameCoder.namehash(testName, 0),
+            COIN_TYPE_ETH,
+            abi.encodePacked(address(0))
+        );
 
-        assertTrue(resolver.hasAddr(testNode, COIN_TYPE_ETH), "null");
-        assertFalse(resolver.hasAddr(testNode, COIN_TYPE_DEFAULT), "unset");
+        assertTrue(resolver.hasAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH), "null");
+        assertFalse(resolver.hasAddr(NameCoder.namehash(testName, 0), COIN_TYPE_DEFAULT), "unset");
     }
 
     function test_setAddr_zeroEVM_fallbacks() external {
         vm.startPrank(owner);
-        resolver.setAddr(testNode, COIN_TYPE_DEFAULT, abi.encodePacked(address(1)));
-        resolver.setAddr(testNode, COIN_TYPE_DEFAULT | 1, abi.encodePacked(address(0)));
-        resolver.setAddr(testNode, COIN_TYPE_DEFAULT | 2, abi.encodePacked(address(2)));
+        resolver.setAddr(
+            NameCoder.namehash(testName, 0),
+            COIN_TYPE_DEFAULT,
+            abi.encodePacked(address(1))
+        );
+        resolver.setAddr(
+            NameCoder.namehash(testName, 0),
+            COIN_TYPE_DEFAULT | 1,
+            abi.encodePacked(address(0))
+        );
+        resolver.setAddr(
+            NameCoder.namehash(testName, 0),
+            COIN_TYPE_DEFAULT | 2,
+            abi.encodePacked(address(2))
+        );
         vm.stopPrank();
 
         assertEq(
-            resolver.addr(testNode, COIN_TYPE_DEFAULT | 1),
+            resolver.addr(NameCoder.namehash(testName, 0), COIN_TYPE_DEFAULT | 1),
             abi.encodePacked(address(0)),
             "block"
         );
         assertEq(
-            resolver.addr(testNode, COIN_TYPE_DEFAULT | 2),
+            resolver.addr(NameCoder.namehash(testName, 0), COIN_TYPE_DEFAULT | 2),
             abi.encodePacked(address(2)),
             "override"
         );
         assertEq(
-            resolver.addr(testNode, COIN_TYPE_DEFAULT | 3),
+            resolver.addr(NameCoder.namehash(testName, 0), COIN_TYPE_DEFAULT | 3),
             abi.encodePacked(address(1)),
             "fallback"
         );
@@ -221,26 +366,26 @@ contract OwnedResolverTest is Test {
         bytes memory v = new bytes(1);
         vm.expectRevert(abi.encodeWithSelector(OwnedResolver.InvalidEVMAddress.selector, v));
         vm.prank(owner);
-        resolver.setAddr(testNode, COIN_TYPE_ETH, v);
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, v);
     }
 
     function test_setAddr_invalidEVM_tooLong() external {
         bytes memory v = new bytes(21);
         vm.expectRevert(abi.encodeWithSelector(OwnedResolver.InvalidEVMAddress.selector, v));
         vm.prank(owner);
-        resolver.setAddr(testNode, COIN_TYPE_ETH, v);
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, v);
     }
 
     function test_setAddr_notAuthorized() external {
         vm.expectRevert(
             abi.encodeWithSelector(
                 IEnhancedAccessControl.EACUnauthorizedAccountRoles.selector,
-                OwnedResolverLib.nodeResource(testNode),
+                OwnedResolverLib.nodeResource(NameCoder.namehash(testName, 0)),
                 OwnedResolverLib.ROLE_SET_ADDR,
                 address(this)
             )
         );
-        resolver.setAddr(testNode, COIN_TYPE_ETH, "");
+        resolver.setAddr(NameCoder.namehash(testName, 0), COIN_TYPE_ETH, "");
     }
 
     /*

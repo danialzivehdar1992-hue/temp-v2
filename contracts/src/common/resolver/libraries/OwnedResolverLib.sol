@@ -4,9 +4,9 @@ pragma solidity >=0.8.13;
 /// @notice Storage layout and roles for OwnedResolver.
 library OwnedResolverLib {
     struct Storage {
-        mapping(bytes32 => bytes32) aliases;
-        mapping(bytes32 => uint256) versions;
-        mapping(bytes32 => mapping(uint256 version => Record)) records;
+        mapping(bytes32 node => bytes) aliases;
+        mapping(bytes32 node => uint256) versions;
+        mapping(bytes32 node => mapping(uint256 version => Record)) records;
     }
 
     struct Record {

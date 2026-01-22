@@ -178,7 +178,7 @@ contract OwnedResolver is
         bytes calldata hash
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_CONTENTHASH) {
         _record(node, false).contenthash = hash;
-        emit IContentHashResolver.ContenthashChanged(node, hash);
+        emit ContenthashChanged(node, hash);
     }
 
     /// @notice Set an interface of the associated ENS node.
@@ -204,7 +204,7 @@ contract OwnedResolver is
         bytes32 y
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_PUBKEY) {
         _record(node, false).pubkey = [x, y];
-        emit IPubkeyResolver.PubkeyChanged(node, x, y);
+        emit PubkeyChanged(node, x, y);
     }
 
     /// @notice Set the name associated with an ENS node, for reverse records.
@@ -214,7 +214,7 @@ contract OwnedResolver is
         string calldata name_
     ) external onlyNodeRoles(node, OwnedResolverLib.ROLE_SET_NAME) {
         _record(node, false).name = name_;
-        emit INameResolver.NameChanged(node, name_);
+        emit NameChanged(node, name_);
     }
 
     /// @notice Set the text for `key` of the associated ENS node.
@@ -230,12 +230,12 @@ contract OwnedResolver is
         onlyPartRoles(node, OwnedResolverLib.partForTextKey(key), OwnedResolverLib.ROLE_SET_TEXT)
     {
         _record(node, false).texts[key] = value;
-        emit ITextResolver.TextChanged(node, key, key, value);
+        emit TextChanged(node, key, key, value);
     }
 
     /// @notice Same as `multicall()`.
     /// @dev The purpose of node check is to prevent a trusted operator from modifying multiple names.
-    //       Since each setter checks EAC, the node check logic can be elided.
+    //       Since there is no trusted operator, the node check logic can be elided.
     function multicallWithNodeCheck(
         bytes32,
         bytes[] calldata calls
@@ -244,9 +244,6 @@ contract OwnedResolver is
     }
 
     /// @inheritdoc IABIResolver
-    /// @param contentTypes Union of desired contents types.
-    /// @return contentType The first matching content type (or 0 if no match).
-    /// @return data The ABI data.
     // solhint-disable-next-line func-name-mixedcase
     function ABI(
         bytes32 node,
@@ -341,9 +338,9 @@ contract OwnedResolver is
             revert InvalidEVMAddress(addressBytes);
         }
         _record(node, false).addresses[coinType] = addressBytes;
-        emit IAddressResolver.AddressChanged(node, coinType, addressBytes);
+        emit AddressChanged(node, coinType, addressBytes);
         if (coinType == COIN_TYPE_ETH) {
-            emit IAddrResolver.AddrChanged(node, address(bytes20(addressBytes)));
+            emit AddrChanged(node, address(bytes20(addressBytes)));
         }
     }
 

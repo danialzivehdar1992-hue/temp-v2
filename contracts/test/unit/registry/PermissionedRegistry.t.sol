@@ -528,6 +528,66 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         registry.renew(tokenId, newExpiry);
     }
 
+    function test_burn() external {
+        uint256 tokenId = registry.register(
+            testLabel,
+            user1,
+            testRegistry,
+            testResolver,
+            EACBaseRolesLib.ALL_ROLES,
+            _after(86400)
+        );
+        vm.expectEmit(true, false, false, true);
+        emit IRegistry.NameBurned(tokenId, user1);
+        vm.prank(user1);
+        registry.burn(tokenId);
+
+        vm.assertEq(registry.ownerOf(tokenId), address(0), "owner");
+        vm.assertEq(registry.getResolver(testLabel), address(0), "getResolver");
+        vm.assertEq(address(registry.getSubregistry(testLabel)), address(0), "getRegistry");
+
+        vm.assertEq(registry.latestOwnerOf(tokenId), address(0), "latest");
+        IRegistryDatastore.Entry memory entry = registry.getEntry(tokenId);
+        vm.assertEq(entry.expiry, 0, "expiry");
+        vm.assertEq(entry.resolver, address(0), "resolver");
+        vm.assertEq(address(entry.subregistry), address(0), "registry");
+
+        assertEq(registry.roles(tokenId, user1), 0, "roles");
+    }
+
+    function test_burn_admin() external {
+        uint256 tokenId = registry.register(
+            testLabel,
+            user1,
+            testRegistry,
+            testResolver,
+            DEFAULT_ROLE_BITMAP,
+            _after(86400)
+        );
+        registry.burn(tokenId);
+    }
+
+    function test_burn_noRole() public {
+        uint256 tokenId = registry.register(
+            testLabel,
+            user1,
+            testRegistry,
+            testResolver,
+            DEFAULT_ROLE_BITMAP,
+            _after(86400)
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IEnhancedAccessControl.EACUnauthorizedAccountRoles.selector,
+                registry.getResource(tokenId),
+                RegistryRolesLib.ROLE_BURN,
+                user1
+            )
+        );
+        vm.prank(user1);
+        registry.burn(tokenId);
+    }
+
     function test_expired_name_has_no_owner() public {
         uint64 expiry = _after(100);
         uint256 tokenId = registry.register(
@@ -1298,8 +1358,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Query for multiple roles where only SET_RESOLVER has assignees
-        uint256 queryBitmap = RegistryRolesLib.ROLE_SET_RESOLVER |
-            RegistryRolesLib.ROLE_RENEW;
+        uint256 queryBitmap = RegistryRolesLib.ROLE_SET_RESOLVER | RegistryRolesLib.ROLE_RENEW;
         (uint256 counts, ) = registry.getAssigneeCount(tokenId, queryBitmap);
 
         // Only SET_RESOLVER should have 1 assignee

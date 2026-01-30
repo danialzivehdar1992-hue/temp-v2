@@ -10,7 +10,8 @@ interface IRegistry is IERC1155Singleton {
     // Events
     ////////////////////////////////////////////////////////////////////////
 
-    /// @dev SHOULD be emitted when a new label is registered
+    /// @notice Subdomain was registered.
+    /// @dev SHOULD be emitted when a new label is registered.
     event NameRegistered(
         uint256 indexed tokenId,
         string label,
@@ -18,8 +19,10 @@ interface IRegistry is IERC1155Singleton {
         address registeredBy
     );
 
+    /// @notice Subdomain was deleted.
+    event NameBurned(uint256 indexed tokenId, address burnedBy);
+
     /// @notice Expiry was changed.
-    /// @dev Error selector: `0x`
     event ExpiryUpdated(uint256 indexed tokenId, uint64 newExpiry, address changedBy);
 
     /// @notice Subregistry was changed.

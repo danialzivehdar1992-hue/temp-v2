@@ -53,6 +53,20 @@ contract PermissionedRegistry is
     // Implementation
     ////////////////////////////////////////////////////////////////////////
 
+    /// @inheritdoc IStandardRegistry
+    function burn(uint256 anyId) external override {
+        (uint256 tokenId, IRegistryDatastore.Entry memory entry) = _checkExpiryAndTokenRoles(
+            anyId,
+            RegistryRolesLib.ROLE_BURN
+        );
+        delete entry.expiry;
+        delete entry.resolver;
+        delete entry.subregistry;
+        DATASTORE.setEntry(tokenId, entry);
+        _burn(super.ownerOf(tokenId), tokenId, 1);
+        emit NameBurned(tokenId, _msgSender());
+    }
+
     function setSubregistry(uint256 anyId, IRegistry registry) external override {
         (uint256 tokenId, IRegistryDatastore.Entry memory entry) = _checkExpiryAndTokenRoles(
             anyId,

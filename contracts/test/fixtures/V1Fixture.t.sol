@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.13;
+
+import {V1Fixture, NameCoder} from "./V1Fixture.sol";
+
+// TODO: add more NameWrapper quirks and invariant tests.
+contract V1FixtureTest is V1Fixture {
+    function setUp() external {
+        deployV1Fixture();
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    // Deployment Helpers
+    ////////////////////////////////////////////////////////////////////////
+
+    function test_registerUnwrapped() external {
+        (, uint256 tokenId) = registerUnwrapped("test");
+        assertEq(ethRegistrarV1.ownerOf(tokenId), user, "owner");
+    }
+
+    function test_registerWrappedETH2LD() external {
+        bytes memory name = registerWrappedETH2LD("test", 0);
+        assertEq(nameWrapper.ownerOf(uint256(NameCoder.namehash(name, 0))), user, "owner");
+    }
+
+    function test_registerWrappedETH3LD() external {
+        bytes memory parentName = registerWrappedETH2LD("test", 0);
+        bytes memory name = createWrappedChild(parentName, "sub", 0);
+        assertEq(nameWrapper.ownerOf(uint256(NameCoder.namehash(name, 0))), user, "owner");
+    }
+
+    function test_registerWrappedDNS2LD() external {
+        bytes memory name = createWrappedName("ens.domains", 0);
+        assertEq(nameWrapper.ownerOf(uint256(NameCoder.namehash(name, 0))), user, "owner");
+    }
+
+    function test_registerWrappedDNS3LD() external {
+        bytes memory parentName = createWrappedName("ens.domains", 0);
+        bytes memory name = createWrappedChild(parentName, "sub", 0);
+        assertEq(nameWrapper.ownerOf(uint256(NameCoder.namehash(name, 0))), user, "owner");
+    }
+
+    ////////////////////////////////////////////////////////////////////////
+    // NameWrapper Quirks
+    ////////////////////////////////////////////////////////////////////////
+
+    function test_nameWrapper_wrapRootReverts() external {
+        vm.expectRevert(abi.encodeWithSignature("Error(string)", "readLabel: Index out of bounds"));
+        nameWrapper.wrap(hex"00", address(1), address(0));
+    }
+
+    function test_nameWrapper_expiryForETH2LDIncludesGrace() external {
+        bytes memory name = registerWrappedETH2LD("test", 0);
+        uint256 unwrappedExpiry = ethRegistrarV1.nameExpires(
+            uint256(keccak256(bytes(NameCoder.firstLabel(name))))
+        );
+        (, , uint256 wrappedExpiry) = nameWrapper.getData(uint256(NameCoder.namehash(name, 0)));
+        assertEq(unwrappedExpiry + ethRegistrarV1.GRACE_PERIOD(), wrappedExpiry);
+    }
+
+    function test_ethRegistrarV1_ownerOfUnregisteredReverts() external {
+        vm.expectRevert();
+        ethRegistrarV1.ownerOf(0);
+    }
+}

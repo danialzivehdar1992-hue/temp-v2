@@ -18,3 +18,22 @@ error ParentNotMigrated(bytes name, uint256 offset);
  * @param label The label that needs to be migrated first
  */
 error LabelNotMigrated(string label);
+
+/// @dev Errors for migration process.
+library MigrationErrors {
+    ////////////////////////////////////////////////////////////////////////
+    // Errors
+    ////////////////////////////////////////////////////////////////////////
+
+    error NameNotMigrated(bytes name);
+    error NameNotSubdomain(bytes name, bytes parentName);
+
+    error NameIsLocked(bytes name);
+    error NameNotLocked(bytes name);
+    error NameNotETH2LD(bytes name);
+    error NameNotEmancipated(bytes name);
+
+    error InvalidWrapperRegistryData();
+
+    error TokenNodeMismatch(uint256 tokenId, bytes32 node);
+}

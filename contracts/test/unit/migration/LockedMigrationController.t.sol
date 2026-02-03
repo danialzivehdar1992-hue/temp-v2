@@ -2,8 +2,6 @@
 pragma solidity >=0.8.13;
 
 import {
-    NameWrapper,
-    IMetadataService,
     OperationProhibited,
     CANNOT_UNWRAP,
     CAN_DO_EVERYTHING,
@@ -18,9 +16,7 @@ import {
 } from "@ens/contracts/wrapper/NameWrapper.sol";
 import {NameCoder} from "@ens/contracts/utils/NameCoder.sol";
 import {GatewayProvider} from "@ens/contracts/ccipRead/GatewayProvider.sol";
-import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
-import {IERC1155Receiver} from "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
 
 import {ENSV1Resolver} from "~src/resolver/ENSV1Resolver.sol";
 import {V1Fixture} from "~test/fixtures/V1Fixture.sol";
@@ -57,14 +53,12 @@ contract LockedMigrationControllerTest is V1Fixture, V2Fixture {
             hcaFactory,
             metadata
         );
-
         migrationController = new LockedMigrationController(
             ethRegistry,
             nameWrapper,
             verifiableFactory,
             address(migratedRegistryImpl)
         );
-
         ethRegistry.grantRootRoles(RegistryRolesLib.ROLE_REGISTRAR, address(migrationController));
     }
 
@@ -120,14 +114,20 @@ contract LockedMigrationControllerTest is V1Fixture, V2Fixture {
         (uint256 tokenId, IRegistryDatastore.Entry memory e) = ethRegistry.getNameData(label);
         assertEq(ethRegistry.ownerOf(tokenId), md.owner, "owner");
         assertEq(e.resolver, md.resolver, "resolver");
+        assertEq(e.expiry, ethRegistrarV1.nameExpires(uint256(keccak256(bytes(label)))), "expiry");
+
+        WrapperRegistry subregistry = WrapperRegistry(address(e.subregistry));
         assertTrue(
             ERC165Checker.supportsInterface(
-                address(e.subregistry),
+                address(subregistry),
                 type(IWrapperRegistry).interfaceId
             ),
             "subregistry"
         );
-        assertEq(e.expiry, ethRegistrarV1.nameExpires(uint256(keccak256(bytes(label)))), "expiry");
+        assertTrue(
+            subregistry.hasRootRoles(RegistryRolesLib.ROLE_REGISTRAR, md.registrar),
+            "ROLE_REGISTRAR"
+        );
     }
 
     function test_migrateBatch_locked(uint8 count) external {

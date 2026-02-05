@@ -6,7 +6,6 @@ import {
     INameWrapper,
     IS_DOT_ETH,
     CAN_EXTEND_EXPIRY,
-    PARENT_CANNOT_CONTROL,
     CANNOT_UNWRAP,
     CANNOT_BURN_FUSES,
     CANNOT_TRANSFER,
@@ -21,7 +20,7 @@ import {ERC165, IERC165} from "@openzeppelin/contracts/utils/introspection/ERC16
 
 import {UnauthorizedCaller} from "../CommonErrors.sol";
 import {IRegistry} from "../registry/interfaces/IRegistry.sol";
-import {IWrapperRegistry, DATA_SIZE} from "../registry/interfaces/IWrapperRegistry.sol";
+import {IWrapperRegistry, MIN_DATA_SIZE} from "../registry/interfaces/IWrapperRegistry.sol";
 import {RegistryRolesLib} from "../registry/libraries/RegistryRolesLib.sol";
 import {WrappedErrorLib} from "../utils/WrappedErrorLib.sol";
 
@@ -49,13 +48,13 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
     /// @dev Restrict `msg.sender` to `NAME_WRAPPER`.
     ///      Avoid `abi.decode()` failure for obviously invalid data.
     ///      Reverts wrapped errors for use inside of legacy IERC1155Receiver handler.
-    modifier onlyWrapperDuringTransfer(bytes calldata data, uint256 expectedSize) {
+    modifier onlyWrapperDuringTransfer(bytes calldata data, uint256 minimumSize) {
         if (msg.sender != address(NAME_WRAPPER)) {
             WrappedErrorLib.wrapAndRevert(
                 abi.encodeWithSelector(UnauthorizedCaller.selector, msg.sender)
             );
         }
-        if (data.length != expectedSize) {
+        if (data.length < minimumSize) {
             WrappedErrorLib.wrapAndRevert(
                 abi.encodeWithSelector(MigrationErrors.InvalidWrapperRegistryData.selector)
             );
@@ -96,7 +95,7 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
         uint256 id,
         uint256 /*amount*/,
         bytes calldata data
-    ) external onlyWrapperDuringTransfer(data, DATA_SIZE) returns (bytes4) {
+    ) external onlyWrapperDuringTransfer(data, MIN_DATA_SIZE) returns (bytes4) {
         uint256[] memory ids = new uint256[](1);
         IWrapperRegistry.Data[] memory mds = new IWrapperRegistry.Data[](1);
         ids[0] = id;
@@ -114,7 +113,7 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
         uint256[] calldata ids,
         uint256[] calldata /*amounts*/,
         bytes calldata data
-    ) external onlyWrapperDuringTransfer(data, 64 + ids.length * DATA_SIZE) returns (bytes4) {
+    ) external onlyWrapperDuringTransfer(data, 64 + ids.length * MIN_DATA_SIZE) returns (bytes4) {
         // never happens: caught by ERC1155Fuse
         // if (ids.length != amounts.length) {
         //     revert IERC1155Errors.ERC1155InvalidArrayLength(ids.length, amounts.length);
@@ -127,6 +126,8 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
         }
     }
 
+    // TODO: gas analysis and optimization
+    // NOTE: converting this to an internal call requires catching many reverts
     function finishERC1155Migration(
         uint256[] calldata ids,
         IWrapperRegistry.Data[] calldata mds
@@ -145,32 +146,27 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
             // if (amounts[i] != 1) { ... }
             IWrapperRegistry.Data memory md = mds[i];
             if (md.owner == address(0)) {
-                revert IERC1155Errors.ERC1155InvalidReceiver(address(0));
+                revert IERC1155Errors.ERC1155InvalidReceiver(md.owner);
             }
-            if (bytes32(ids[i]) != md.node) {
-                revert MigrationErrors.TokenNodeMismatch(ids[i], md.node);
+            bytes32 node = bytes32(ids[i]);
+            bytes32 labelHash = keccak256(bytes(md.label));
+            if (node != NameCoder.namehash(parentNode, labelHash)) {
+                revert MigrationErrors.NameDataMismatch(uint256(node));
             }
+            // 1 <= length(label) <= 255
 
-            bytes memory name = NAME_WRAPPER.names(md.node); // exists
-            string memory label = NameCoder.firstLabel(name); // exists
-            bytes32 labelHash = keccak256(bytes(label));
-            if (NameCoder.namehash(parentNode, labelHash) != md.node) {
-                revert MigrationErrors.NameNotSubdomain(name, NAME_WRAPPER.names(parentNode));
-            }
-
-            (, uint32 fuses, uint64 expiry) = NAME_WRAPPER.getData(uint256(md.node));
+            (, uint32 fuses, uint64 expiry) = NAME_WRAPPER.getData(uint256(node));
             // ignore owner, only we can call this function => we own it
 
+            // cannot be set without PARENT_CANNOT_CONTROL
             if ((fuses & CANNOT_UNWRAP) == 0) {
-                revert MigrationErrors.NameNotLocked(name);
-            }
-            if ((fuses & PARENT_CANNOT_CONTROL) == 0) {
-                revert MigrationErrors.NameNotEmancipated(name);
+                revert MigrationErrors.NameNotLocked(uint256(node));
             }
 
             // sync expiry
             if ((fuses & IS_DOT_ETH) != 0) {
-                fuses &= ~CAN_EXTEND_EXPIRY; // 2LD is always renewable by anyone
+                require((fuses & CAN_EXTEND_EXPIRY) == 0, "2LD is always renewable by anyone");
+                //fuses &= ~CAN_EXTEND_EXPIRY; // 2LD is always renewable by anyone
                 expiry = uint64(NAME_WRAPPER.registrar().nameExpires(uint256(labelHash))); // does not revert
             }
             // NameWrapper subtracts GRACE_PERIOD from expiry during _beforeTransfer()
@@ -182,13 +178,13 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
 
             address resolver;
             if ((fuses & CANNOT_SET_RESOLVER) != 0) {
-                resolver = NAME_WRAPPER.ens().resolver(md.node); // copy V1 resolver
+                resolver = NAME_WRAPPER.ens().resolver(node); // copy V1 resolver
             } else {
                 resolver = md.resolver; // accepts any value
-                NAME_WRAPPER.setResolver(md.node, address(0)); // clear V1 resolver
+                NAME_WRAPPER.setResolver(node, address(0)); // clear V1 resolver
             }
 
-            (uint256 tokenRoles, uint256 subRegistryRoles) = _generateRoleBitmapsFromFuses(fuses);
+            (uint256 tokenRoles, uint256 registryRoles) = _generateRoleBitmapsFromFuses(fuses);
             // PermissionedRegistry._register() => _grantRoles() => _checkRoleBitmap()
             // wont happen as roles are correct by construction
 
@@ -201,10 +197,9 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
                         IWrapperRegistry.initialize,
                         (
                             IWrapperRegistry.ConstructorArgs({
-                                node: md.node,
+                                node: node,
                                 owner: md.owner,
-                                ownerRoles: subRegistryRoles,
-                                registrar: md.registrar
+                                ownerRoles: registryRoles
                             })
                         )
                     )
@@ -212,12 +207,12 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
             );
 
             // add name to V2
-            _inject(label, md.owner, subregistry, resolver, tokenRoles, expiry);
+            _inject(md.label, md.owner, subregistry, resolver, tokenRoles, expiry);
             // PermissionedRegistry._register() => NameAlreadyRegistered
             // ERC1155._safeTransferFrom() => ERC1155InvalidReceiver
 
             // Burn all migration fuses
-            NAME_WRAPPER.setFuses(md.node, uint16(FUSES_TO_BURN));
+            NAME_WRAPPER.setFuses(node, uint16(FUSES_TO_BURN));
         }
     }
 
@@ -232,14 +227,13 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
 
     function _parentNode() internal view virtual returns (bytes32);
 
-    /// @notice Generates role bitmaps based on fuses
-    /// @dev Returns two bitmaps: tokenRoles for the name registration and subRegistryRoles for the registry owner
+    /// @notice Generates role bitmaps based on fuses.
     /// @param fuses The current fuses on the name
-    /// @return tokenRoles The role bitmap for the owner on their name in their parent registry.
-    /// @return subRegistryRoles The role bitmap for the owner on their name's subregistry.
+    /// @return tokenRoles The token roles in parent registry.
+    /// @return registryRoles The root roles in token subregistry.
     function _generateRoleBitmapsFromFuses(
         uint32 fuses
-    ) internal pure returns (uint256 tokenRoles, uint256 subRegistryRoles) {
+    ) internal pure returns (uint256 tokenRoles, uint256 registryRoles) {
         // Check if fuses are permanently frozen
         bool fusesFrozen = (fuses & CANNOT_BURN_FUSES) != 0;
 
@@ -266,14 +260,14 @@ abstract contract WrapperReceiver is ERC165, IERC1155Receiver {
 
         // Owner gets registrar permissions on subregistry only if subdomain creation is allowed
         if ((fuses & CANNOT_CREATE_SUBDOMAIN) == 0) {
-            subRegistryRoles |= RegistryRolesLib.ROLE_REGISTRAR;
+            registryRoles |= RegistryRolesLib.ROLE_REGISTRAR;
             if (!fusesFrozen) {
-                subRegistryRoles |= RegistryRolesLib.ROLE_REGISTRAR_ADMIN;
+                registryRoles |= RegistryRolesLib.ROLE_REGISTRAR_ADMIN;
             }
         }
 
         // Add renewal roles to subregistry
-        subRegistryRoles |= RegistryRolesLib.ROLE_RENEW;
-        subRegistryRoles |= RegistryRolesLib.ROLE_RENEW_ADMIN;
+        registryRoles |= RegistryRolesLib.ROLE_RENEW;
+        registryRoles |= RegistryRolesLib.ROLE_RENEW_ADMIN;
     }
 }

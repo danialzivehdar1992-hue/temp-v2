@@ -2,7 +2,11 @@
 pragma solidity >=0.8.13;
 
 import {NameCoder} from "@ens/contracts/utils/NameCoder.sol";
-import {INameWrapper, PARENT_CANNOT_CONTROL} from "@ens/contracts/wrapper/INameWrapper.sol";
+import {
+    INameWrapper,
+    CANNOT_UNWRAP,
+    PARENT_CANNOT_CONTROL
+} from "@ens/contracts/wrapper/INameWrapper.sol";
 import {VerifiableFactory} from "@ensdomains/verifiable-factory/VerifiableFactory.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -85,11 +89,6 @@ contract WrapperRegistry is
             args.owner,
             false
         );
-
-        // Grant registrar role if specified (typically for testing)
-        if (args.registrar != address(0)) {
-            _grantRoles(ROOT_RESOURCE, RegistryRolesLib.ROLE_REGISTRAR, args.registrar, false);
-        }
     }
 
     ////////////////////////////////////////////////////////////////////////
@@ -102,16 +101,11 @@ contract WrapperRegistry is
     }
 
     /// @inheritdoc PermissionedRegistry
-    /// @dev Restore the latest resolver to `V1_RESOLVER` upon visiting migratable children.
+    /// @dev Return `V1_RESOLVER` upon visiting migratable children.
     function getResolver(
         string calldata label
     ) public view override(IRegistry, PermissionedRegistry) returns (address) {
-        bytes32 node = NameCoder.namehash(parentNode, keccak256(bytes(label)));
-        (address ownerV1, uint32 fuses, ) = NAME_WRAPPER.getData(uint256(node));
-        if (ownerV1 != address(this) && (fuses & PARENT_CANNOT_CONTROL) != 0) {
-            return V1_RESOLVER;
-        }
-        return super.getResolver(label);
+        return _isMigratableChild(label) ? V1_RESOLVER : super.getResolver(label);
     }
 
     /// @inheritdoc WrapperReceiver
@@ -137,9 +131,7 @@ contract WrapperRegistry is
         uint256 roleBitmap,
         uint64 expiry
     ) internal override returns (uint256 tokenId) {
-        bytes32 node = NameCoder.namehash(parentNode, keccak256(bytes(label)));
-        (address ownerV1, uint32 fuses, ) = NAME_WRAPPER.getData(uint256(node));
-        if (ownerV1 != address(this) && (fuses & PARENT_CANNOT_CONTROL) != 0) {
+        if (_isMigratableChild(label)) {
             revert MigrationErrors.NameNotMigrated(
                 NameCoder.addLabel(NAME_WRAPPER.names(parentNode), label)
             );
@@ -156,5 +148,12 @@ contract WrapperRegistry is
 
     function _parentNode() internal view override returns (bytes32) {
         return parentNode;
+    }
+
+    function _isMigratableChild(string memory label) internal view returns (bool) {
+        bytes32 node = NameCoder.namehash(parentNode, keccak256(bytes(label)));
+        (address ownerV1, uint32 fuses, ) = NAME_WRAPPER.getData(uint256(node));
+        uint32 EMANCIPATED = CANNOT_UNWRAP | PARENT_CANNOT_CONTROL;
+        return ownerV1 != address(this) && (fuses & EMANCIPATED) == EMANCIPATED;
     }
 }

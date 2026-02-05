@@ -3,8 +3,8 @@ pragma solidity >=0.8.13;
 
 import {IPermissionedRegistry} from "./IPermissionedRegistry.sol";
 
-/// @dev Size of `abi.encode(Data({...}))`.
-uint256 constant DATA_SIZE = 5 * 32;
+/// @dev Minimum Size of `abi.encode(Data({...}))`.
+uint256 constant MIN_DATA_SIZE = 4 * 32;
 
 /// @dev Interface for a registry that manages a locked NameWrapper name.
 interface IWrapperRegistry is IPermissionedRegistry {
@@ -17,14 +17,12 @@ interface IWrapperRegistry is IPermissionedRegistry {
         bytes32 node;
         address owner;
         uint256 ownerRoles;
-        address registrar;
     }
 
     struct Data {
-        bytes32 node;
+        string label;
         address owner;
         address resolver;
-        address registrar;
         uint256 salt;
     }
 

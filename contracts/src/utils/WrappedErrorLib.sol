@@ -8,7 +8,7 @@ library WrappedErrorLib {
     bytes4 public constant ERROR_STRING_SELECTOR = 0x08c379a0; // Error(string)
 
     /// @dev The detectable human-readable error prefix.
-    bytes16 public constant WRAPPED_ERROR_PREFIX = unicode"❌WrappedError:";
+    bytes16 public constant WRAPPED_ERROR_PREFIX = "WrappedError:0x"; // unicode"❌WrappedErr:0x";
 
     /// @dev Wrap an error and then revert.
     function wrapAndRevert(bytes memory err) internal pure {

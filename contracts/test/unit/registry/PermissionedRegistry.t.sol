@@ -10,17 +10,15 @@ import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 
 import {EACBaseRolesLib} from "~src/access-control/EnhancedAccessControl.sol";
-import {IRegistryDatastore} from "~src/registry/interfaces/IRegistryDatastore.sol";
 import {IRegistryMetadata} from "~src/registry/interfaces/IRegistryMetadata.sol";
 import {RegistryRolesLib} from "~src/registry/libraries/RegistryRolesLib.sol";
-import {RegistryDatastore} from "~src/registry/RegistryDatastore.sol";
 import {SimpleRegistryMetadata} from "~src/registry/SimpleRegistryMetadata.sol";
 import {LibLabel} from "~src/utils/LibLabel.sol";
 import {
     IPermissionedRegistry,
     IEnhancedAccessControl,
     IRegistry,
-    IStandardRegistry
+    ITokenRegistry
 } from "~src/registry/PermissionedRegistry.sol";
 import {MockHCAFactoryBasic} from "~test/mocks/MockHCAFactoryBasic.sol";
 import {MockPermissionedRegistry} from "~test/mocks/MockPermissionedRegistry.sol";
@@ -34,7 +32,6 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         uint256 value
     );
 
-    RegistryDatastore datastore;
     MockPermissionedRegistry registry;
     MockHCAFactoryBasic hcaFactory;
     IRegistryMetadata metadata;
@@ -58,16 +55,9 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
     uint256 deployerRoles = EACBaseRolesLib.ALL_ROLES;
 
     function setUp() public {
-        datastore = new RegistryDatastore();
         hcaFactory = new MockHCAFactoryBasic();
         metadata = new SimpleRegistryMetadata(hcaFactory);
-        registry = new MockPermissionedRegistry(
-            datastore,
-            hcaFactory,
-            metadata,
-            address(this),
-            deployerRoles
-        );
+        registry = new MockPermissionedRegistry(hcaFactory, metadata, address(this), deployerRoles);
     }
 
     function test_constructor_sets_roles() public view {
@@ -388,9 +378,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(86400)
         );
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IStandardRegistry.NameAlreadyRegistered.selector, "test2")
-        );
+        vm.expectRevert(abi.encodeWithSelector(ITokenRegistry.NameNotAvailable.selector, "test2"));
         registry.register(
             "test2",
             address(this),
@@ -411,7 +399,8 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(86400)
         );
         registry.setSubregistry(tokenId, IRegistry(address(this)));
-        vm.assertEq(address(registry.getSubregistry("test2")), address(this));
+        (IRegistry subregistry, ) = registry.findChild("test2");
+        vm.assertEq(address(subregistry), address(this));
     }
 
     function test_Revert_cannot_set_subregistry_without_role() public {
@@ -446,7 +435,8 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(86400)
         );
         registry.setResolver(tokenId, address(this));
-        vm.assertEq(address(registry.getResolver("test2")), address(this));
+        (, address resolver) = registry.findChild("test2");
+        vm.assertEq(resolver, address(this));
     }
 
     function test_Revert_cannot_set_resolver_without_role() public {
@@ -499,7 +489,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         uint64 newExpiry = _after(200);
 
         vm.expectEmit(true, false, false, true);
-        emit IRegistry.ExpiryUpdated(tokenId, newExpiry, address(this));
+        emit ITokenRegistry.ExpiryUpdated(tokenId, newExpiry, address(this));
         registry.renew(tokenId, newExpiry);
     }
 
@@ -514,7 +504,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
         vm.warp(_after(101));
 
-        vm.expectRevert(abi.encodeWithSelector(IStandardRegistry.NameExpired.selector, tokenId));
+        vm.expectRevert(abi.encodeWithSelector(ITokenRegistry.NameExpired.selector, tokenId));
         registry.renew(tokenId, _after(200));
     }
 
@@ -531,7 +521,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                IStandardRegistry.CannotReduceExpiration.selector,
+                ITokenRegistry.CannotReduceExpiration.selector,
                 _after(200),
                 newExpiry
             )
@@ -539,7 +529,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         registry.renew(tokenId, newExpiry);
     }
 
-    function test_burn() external {
+    function test_unregister() external {
         uint256 tokenId = registry.register(
             testLabel,
             user1,
@@ -549,19 +539,18 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(86400)
         );
         vm.expectEmit(true, false, false, true);
-        emit IRegistry.NameBurned(tokenId, user1);
+        emit ITokenRegistry.ExpiryUpdated(tokenId, uint64(block.timestamp), user1);
         vm.prank(user1);
-        registry.burn(tokenId);
+        registry.unregister(tokenId, true);
 
         vm.assertEq(registry.ownerOf(tokenId), address(0), "owner");
-        vm.assertEq(registry.getResolver(testLabel), address(0), "getResolver");
-        vm.assertEq(address(registry.getSubregistry(testLabel)), address(0), "getRegistry");
+
+        (IRegistry subregistry, address resolver) = registry.findChild(testLabel);
+        vm.assertEq(address(subregistry), address(0), "subregistry");
+        vm.assertEq(resolver, address(0), "resolver");
 
         vm.assertEq(registry.latestOwnerOf(tokenId), address(0), "latest");
-        IRegistryDatastore.Entry memory entry = registry.getEntry(tokenId);
-        vm.assertEq(entry.expiry, 0, "expiry");
-        vm.assertEq(entry.resolver, address(0), "resolver");
-        vm.assertEq(address(entry.subregistry), address(0), "registry");
+        vm.assertEq(registry.getExpiry(tokenId), block.timestamp, "expiry");
 
         assertEq(registry.roles(tokenId, user1), 0, "roles");
     }
@@ -575,7 +564,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             DEFAULT_ROLE_BITMAP,
             _after(86400)
         );
-        registry.burn(tokenId);
+        registry.unregister(tokenId, true);
     }
 
     function test_burn_noRole() public {
@@ -591,12 +580,12 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             abi.encodeWithSelector(
                 IEnhancedAccessControl.EACUnauthorizedAccountRoles.selector,
                 registry.getResource(tokenId),
-                RegistryRolesLib.ROLE_BURN,
+                RegistryRolesLib.ROLE_UNREGISTER,
                 user1
             )
         );
         vm.prank(user1);
-        registry.burn(tokenId);
+        registry.unregister(tokenId, true);
     }
 
     function test_expired_name_has_no_owner() public {
@@ -612,8 +601,9 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         vm.warp(expiry + 1);
         assertEq(registry.ownerOf(tokenId), address(0), "owner");
         assertEq(registry.latestOwnerOf(tokenId), user1, "latest");
-        assertEq(registry.getResolver(testLabel), address(0), "resolver");
-        assertEq(address(registry.getSubregistry(testLabel)), address(0), "registry");
+        (IRegistry subregistry, address resolver) = registry.findChild(testLabel);
+        assertEq(address(subregistry), address(0), "subregistry");
+        assertEq(resolver, address(0), "resolver");
     }
 
     function test_expired_name_can_be_reregistered() public {
@@ -662,7 +652,8 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(100)
         );
         vm.warp(_after(101));
-        assertEq(address(registry.getSubregistry("test2")), address(0));
+        (IRegistry subregistry, ) = registry.findChild("test2");
+        assertEq(address(subregistry), address(0));
     }
 
     function test_expired_name_returns_zero_resolver() public {
@@ -676,7 +667,8 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
         registry.setResolver(tokenId, address(1));
         vm.warp(_after(101));
-        assertEq(registry.getResolver("test2"), address(0));
+        (, address resolver) = registry.findChild("test2");
+        assertEq(resolver, address(0));
     }
 
     function test_expired_name_reregistration_resets_roles() public {
@@ -714,7 +706,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         uint256 originalResourceId = registry.getResource(tokenId);
-        uint32 originalEacVersionId = registry.getEntry(tokenId).eacVersionId;
+        uint32 originalEacVersionId = registry.getEacVersionId(tokenId);
 
         // Move time forward to expire the name
         vm.warp(_after(101));
@@ -737,7 +729,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         assertNotEq(newTokenId, tokenId, "Token ID should change after re-registration");
 
         // Verify eacVersionId has incremented
-        uint32 newEacVersionId = registry.getEntry(newTokenId).eacVersionId;
+        uint32 newEacVersionId = registry.getEacVersionId(newTokenId);
         assertEq(
             newEacVersionId,
             originalEacVersionId + 1,
@@ -780,7 +772,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Get initial eacVersionId
-        uint32 initialEacVersionId = registry.getEntry(tokenId).eacVersionId;
+        uint32 initialEacVersionId = registry.getEacVersionId(tokenId);
         uint256 initialResourceId = registry.getResource(tokenId);
 
         // Let the name expire
@@ -799,7 +791,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Verify eacVersionId has incremented
-        uint32 newEacVersionId = registry.getEntry(newTokenId).eacVersionId;
+        uint32 newEacVersionId = registry.getEacVersionId(newTokenId);
         assertEq(
             newEacVersionId,
             initialEacVersionId + 1,
@@ -836,25 +828,26 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Grant additional roles
-        uint256 resourceId = registry.getResource(tokenId);
-        registry.grantRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user1);
-        registry.grantRoles(resourceId, RegistryRolesLib.ROLE_SET_RESOLVER, user2);
+        registry.grantRoles(tokenId, RegistryRolesLib.ROLE_RENEW, user1);
+        registry.grantRoles(tokenId, RegistryRolesLib.ROLE_SET_RESOLVER, user2);
 
         // Get current tokenId and eacVersionId after role grants
-        uint256 currentTokenId = registry.getTokenId(resourceId);
-        uint32 initialEacVersionId = registry.getEntry(currentTokenId).eacVersionId;
+        uint32 versionBefore = registry.getEacVersionId(tokenId);
 
         // Verify roles are set
-        assertTrue(registry.hasRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user1));
-        assertTrue(registry.hasRoles(resourceId, RegistryRolesLib.ROLE_SET_RESOLVER, user2));
+        assertTrue(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_RENEW, user1));
+        assertTrue(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_SET_RESOLVER, user2));
+
+        // get regenerated token
+        tokenId = registry.getTokenId(tokenId);
 
         // Transfer to temp address and let expire
         address tempOwner = makeAddr("temp");
         vm.prank(user1);
-        registry.safeTransferFrom(user1, tempOwner, currentTokenId, 1, "");
+        registry.safeTransferFrom(user1, tempOwner, tokenId, 1, "");
 
         vm.warp(_after(101));
-        assertEq(registry.ownerOf(currentTokenId), address(0));
+        assertEq(registry.ownerOf(tokenId), address(0));
 
         // Re-register with new owner
         uint256 newTokenId = registry.register(
@@ -866,20 +859,18 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             _after(100)
         );
 
-        // Verify fresh ACL
-        uint32 newEacVersionId = registry.getEntry(newTokenId).eacVersionId;
-        assertEq(newEacVersionId, initialEacVersionId + 1);
+        assertNotEq(tokenId, newTokenId, "regenerate");
 
-        uint256 newResourceId = registry.getResource(newTokenId);
-        assertNotEq(newResourceId, resourceId);
+        // Verify fresh ACL
+        assertEq(registry.getEacVersionId(tokenId), versionBefore + 1);
 
         // Old users should have no roles
-        assertFalse(registry.hasRoles(newResourceId, RegistryRolesLib.ROLE_RENEW, user1));
-        assertFalse(registry.hasRoles(newResourceId, RegistryRolesLib.ROLE_SET_RESOLVER, user2));
+        assertFalse(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_RENEW, user1));
+        assertFalse(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_SET_RESOLVER, user2));
 
         // New owner should have default roles
-        assertTrue(registry.hasRoles(newResourceId, RegistryRolesLib.ROLE_SET_SUBREGISTRY, user3));
-        assertTrue(registry.hasRoles(newResourceId, RegistryRolesLib.ROLE_SET_RESOLVER, user3));
+        assertTrue(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_SET_SUBREGISTRY, user3));
+        assertTrue(registry.hasRoles(tokenId, RegistryRolesLib.ROLE_SET_RESOLVER, user3));
     }
 
     function test_first_time_registration_no_eacVersionId_increment() public {
@@ -887,12 +878,13 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         address owner = makeAddr("owner");
 
         // Verify name has never been registered (entry.expiry should be 0)
-        (, IRegistryDatastore.Entry memory entry) = registry.getNameData(label);
-        assertEq(entry.expiry, 0, "Name should never have been registered before");
-        assertEq(entry.eacVersionId, 0, "Initial eacVersionId should be 0");
+        uint256 tokenId = uint256(keccak256(bytes(label)));
+
+        assertEq(registry.getExpiry(tokenId), 0, "Name should never have been registered before");
+        assertEq(registry.getEacVersionId(tokenId), 0, "Initial eacVersionId should be 0");
 
         // Register the name for the first time
-        uint256 newTokenId = registry.register(
+        tokenId = registry.register(
             label,
             owner,
             registry,
@@ -902,19 +894,14 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Verify eacVersionId has NOT incremented (should still be 0)
-        uint32 finalEacVersionId = registry.getEntry(newTokenId).eacVersionId;
-        assertEq(finalEacVersionId, 0, "eacVersionId should remain 0 for first-time registration");
+        assertEq(
+            registry.getEacVersionId(tokenId),
+            0,
+            "eacVersionId should remain 0 for first-time registration"
+        );
 
         // Verify the name is properly registered
-        assertEq(registry.ownerOf(newTokenId), owner, "Owner should be set correctly");
-
-        // Verify resource ID contains eacVersionId of 0
-        uint256 resourceId = registry.getResource(newTokenId);
-        assertEq(
-            uint32(resourceId),
-            0,
-            "Resource ID should contain eacVersionId of 0 for first registration"
-        );
+        assertEq(registry.ownerOf(tokenId), owner, "Owner should be set correctly");
     }
 
     function test_reregistration_with_existing_owner_increments_eacVersionId() public {
@@ -932,7 +919,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Get initial state
-        uint32 initialEacVersionId = registry.getEntry(tokenId).eacVersionId;
+        uint32 initialEacVersionId = registry.getEacVersionId(tokenId);
         uint256 initialResourceId = registry.getResource(tokenId);
 
         // Verify owner1 has the token
@@ -963,7 +950,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
 
         // Verify the old token was burned and eacVersionId incremented
-        uint32 newEacVersionId = registry.getEntry(newTokenId).eacVersionId;
+        uint32 newEacVersionId = registry.getEacVersionId(newTokenId);
         assertEq(
             newEacVersionId,
             initialEacVersionId + 1,
@@ -1071,10 +1058,11 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
         address newRegistry = makeAddr("new");
         vm.expectEmit(true, false, false, true);
-        emit IRegistry.SubregistryUpdated(tokenId, IRegistry(newRegistry));
+        emit ITokenRegistry.SubregistryUpdated(tokenId, IRegistry(newRegistry), user1);
         vm.prank(user1);
         registry.setSubregistry(tokenId, IRegistry(newRegistry));
-        assertEq(address(registry.getSubregistry(testLabel)), newRegistry);
+        (IRegistry subregistry, ) = registry.findChild(testLabel);
+        assertEq(address(subregistry), newRegistry);
     }
 
     function test_setSubregistry_expired() external {
@@ -1088,7 +1076,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             expiry
         );
         vm.warp(expiry + 1);
-        vm.expectRevert(abi.encodeWithSelector(IStandardRegistry.NameExpired.selector, tokenId));
+        vm.expectRevert(abi.encodeWithSelector(ITokenRegistry.NameExpired.selector, tokenId));
         vm.prank(user1);
         registry.setSubregistry(tokenId, testRegistry);
     }
@@ -1104,10 +1092,11 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
         address newResolver = makeAddr("new");
         vm.expectEmit(true, false, false, true);
-        emit IRegistry.ResolverUpdated(tokenId, newResolver);
+        emit ITokenRegistry.ResolverUpdated(tokenId, newResolver, user1);
         vm.prank(user1);
         registry.setResolver(tokenId, newResolver);
-        assertEq(registry.getResolver(testLabel), newResolver);
+        (, address resolver) = registry.findChild(testLabel);
+        assertEq(resolver, newResolver);
     }
 
     function test_setResolver_expired() external {
@@ -1121,7 +1110,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             expiry
         );
         vm.warp(expiry + 1);
-        vm.expectRevert(abi.encodeWithSelector(IStandardRegistry.NameExpired.selector, tokenId));
+        vm.expectRevert(abi.encodeWithSelector(ITokenRegistry.NameExpired.selector, tokenId));
         vm.prank(user1);
         registry.setResolver(tokenId, testResolver);
     }
@@ -1140,7 +1129,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         uint256 resource = registry.getResource(tokenId);
 
         vm.expectEmit(true, true, false, true);
-        emit IRegistry.TokenRegenerated(tokenId, tokenId + 1, resource);
+        emit IPermissionedRegistry.TokenRegenerated(tokenId, tokenId + 1, resource);
         registry.grantRoles(resource, RegistryRolesLib.ROLE_RENEW, user2);
         uint256 tokenId2 = registry.getTokenId(tokenId);
 
@@ -1181,7 +1170,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         // revoke the role and check regeneration again
         vm.expectEmit(true, true, false, true);
-        emit IRegistry.TokenRegenerated(tokenId2, tokenId2 + 1, resource);
+        emit IPermissionedRegistry.TokenRegenerated(tokenId2, tokenId2 + 1, resource);
         registry.revokeRoles(tokenId, RegistryRolesLib.ROLE_RENEW, user2);
 
         uint256 tokenId3 = registry.getTokenId(tokenId);
@@ -1581,122 +1570,25 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
     // Token ID Generation Tests
 
-    function test_constructTokenId_basic() public view {
-        uint256 canonicalId = 0x123456789ABCDEF000000000000000000000000000000000;
-        uint32 tokenVersionId = 42;
-
-        uint256 tokenId = registry.constructTokenId(canonicalId, tokenVersionId);
-
-        // Verify the token ID contains the correct components
-        uint256 extractedCanonicalId = LibLabel.getCanonicalId(tokenId);
-        uint32 extractedTokenVersionId = _tokenVersionId(tokenId);
-
-        assertEq(extractedCanonicalId, canonicalId, "Canonical ID should be preserved");
-        assertEq(extractedTokenVersionId, tokenVersionId, "Token version ID should be preserved");
-    }
-
-    function test_constructTokenId_with_max_values() public view {
-        uint256 canonicalId = uint256(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF) << 32; // Upper bits set
-        uint32 tokenVersionId = type(uint32).max;
-
-        uint256 tokenId = registry.constructTokenId(canonicalId, tokenVersionId);
-
-        // Verify all components are preserved even at max values
-        uint256 extractedCanonicalId = LibLabel.getCanonicalId(tokenId);
-        uint32 extractedTokenVersionId = _tokenVersionId(tokenId);
-
-        assertEq(extractedCanonicalId, canonicalId, "Max canonical ID should be preserved");
-        assertEq(
-            extractedTokenVersionId,
-            tokenVersionId,
-            "Max token version ID should be preserved"
-        );
-    }
-
-    function test_constructTokenId_with_zero_values() public view {
-        uint256 canonicalId = 0x123456789ABCDEF000000000000000000000000000000000;
-        uint32 tokenVersionId = 0;
-
-        uint256 tokenId = registry.constructTokenId(canonicalId, tokenVersionId);
-
-        // Verify zero values are handled correctly
-        uint256 extractedCanonicalId = LibLabel.getCanonicalId(tokenId);
-        uint32 extractedTokenVersionId = _tokenVersionId(tokenId);
-
-        assertEq(
-            extractedCanonicalId,
-            canonicalId,
-            "Canonical ID should be preserved with zero versions"
-        );
-        assertEq(extractedTokenVersionId, 0, "Zero token version ID should be preserved");
-    }
-
-    function test_tokenId_bit_layout() public view {
-        uint256 canonicalId = 0x123456789ABCDEF000000000000000000000000000000000;
-        uint32 tokenVersionId = 0x12345678;
-
-        uint256 tokenId = registry.constructTokenId(canonicalId, tokenVersionId);
-
-        // Verify bit layout manually
-        // Lower 32 bits should be tokenVersionId
-        uint256 lowerBits = tokenId & 0xFFFFFFFF;
-        assertEq(lowerBits, uint256(tokenVersionId), "Lower 32 bits should be token version ID");
-
-        // Upper bits should match canonical ID (everything except lower 32 bits)
-        uint256 upperBits = tokenId & ~uint256(0xFFFFFFFF);
-        assertEq(upperBits, canonicalId, "Upper bits should match canonical ID");
-    }
-
-    function test_registration_generates_correct_tokenId() public {
-        string memory label = "tokentest";
-        uint256 tokenId = registry.register(
-            label,
-            user1,
-            registry,
-            address(0),
-            DEFAULT_ROLE_BITMAP,
-            _after(86400)
-        );
-
-        // Verify the token ID has correct structure
-        uint256 canonicalId = LibLabel.getCanonicalId(tokenId);
-        uint32 tokenVersionId = _tokenVersionId(tokenId);
-
-        // First registration should have version ID of 0
-        assertEq(tokenVersionId, 0, "Initial token version ID should be 0");
-
-        // Canonical ID should match label hash with lower 32 bits cleared
-        uint256 expectedCanonicalId = LibLabel.labelToCanonicalId(label);
-        assertEq(canonicalId, expectedCanonicalId, "Canonical ID should match label hash");
-    }
-
     function test_token_regeneration_increments_tokenVersionId() public {
-        string memory label = "regentest";
         uint256 tokenId = registry.register(
-            label,
+            "regentest",
             user1,
             registry,
             address(0),
             DEFAULT_ROLE_BITMAP,
             _after(86400)
         );
-
-        uint256 resourceId = registry.getResource(tokenId);
-        uint32 initialTokenVersionId = _tokenVersionId(tokenId);
-
+        uint256 resource = registry.getResource(tokenId);
+        uint32 versionBefore = registry.getTokenVersionId(tokenId);
         // Grant a role to trigger regeneration
-        registry.grantRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user2);
-
+        registry.grantRoles(tokenId, RegistryRolesLib.ROLE_RENEW, user2);
         // Get the new token ID
-        uint256 newTokenId = registry.getTokenId(resourceId);
-        uint32 newTokenVersionId = _tokenVersionId(newTokenId);
-
+        uint32 versonAfter = registry.getTokenVersionId(tokenId);
         // Token version should increment
-        assertEq(newTokenVersionId, initialTokenVersionId + 1, "Token version ID should increment");
-
+        assertEq(versonAfter, versionBefore + 1, "Token version ID should increment");
         // Resource ID should remain the same (EAC version is stable within the resource)
-        uint256 newResourceId = registry.getResource(newTokenId);
-        assertEq(newResourceId, resourceId, "Resource ID should remain the same");
+        assertEq(registry.getResource(tokenId), resource, "Resource ID should remain the same");
     }
 
     function test_multiple_regenerations_increment_correctly() public {
@@ -1709,41 +1601,26 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
             DEFAULT_ROLE_BITMAP,
             _after(86400)
         );
-
         uint256 resourceId = registry.getResource(tokenId);
-        uint32 initialTokenVersionId = _tokenVersionId(tokenId);
+        uint32 tokenVersionId0 = _tokenVersionId(tokenId);
 
         // First regeneration
         registry.grantRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user2);
-        uint256 tokenId1 = registry.getTokenId(resourceId);
-        uint32 tokenVersionId1 = _tokenVersionId(tokenId1);
+        uint32 tokenVersionId1 = _tokenVersionId(registry.getTokenId(tokenId));
 
         // Second regeneration
         registry.grantRoles(resourceId, RegistryRolesLib.ROLE_SET_SUBREGISTRY, user3);
-        uint256 tokenId2 = registry.getTokenId(resourceId);
-        uint32 tokenVersionId2 = _tokenVersionId(tokenId2);
+        uint32 tokenVersionId2 = _tokenVersionId(registry.getTokenId(tokenId));
 
         // Third regeneration
         registry.revokeRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user2);
-        uint256 tokenId3 = registry.getTokenId(resourceId);
-        uint32 tokenVersionId3 = _tokenVersionId(tokenId3);
+        uint32 tokenVersionId3 = _tokenVersionId(registry.getTokenId(tokenId));
 
         // Verify incremental progression
-        assertEq(
-            tokenVersionId1,
-            initialTokenVersionId + 1,
-            "First regeneration should increment by 1"
-        );
-        assertEq(
-            tokenVersionId2,
-            initialTokenVersionId + 2,
-            "Second regeneration should increment by 2"
-        );
-        assertEq(
-            tokenVersionId3,
-            initialTokenVersionId + 3,
-            "Third regeneration should increment by 3"
-        );
+        assertEq(tokenVersionId1, tokenVersionId0 + 1, "First regeneration should increment by 1");
+        assertEq(tokenVersionId2, tokenVersionId0 + 2, "Second regeneration should increment by 2");
+        assertEq(tokenVersionId3, tokenVersionId0 + 3, "Third regeneration should increment by 3");
+        assertEq(registry.getResource(tokenId), resourceId, "Resource ID should remain the same");
     }
 
     function test_reregistration_after_expiry_resets_tokenVersionId() public {
@@ -1877,31 +1754,6 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
         );
     }
 
-    function test_tokenId_edge_case_max_uint32_versions() public view {
-        // This test verifies the system can handle maximum version values
-        // We'll use the test helper to construct a token ID with max versions
-        uint256 canonicalId = LibLabel.labelToCanonicalId("maxtest");
-        uint32 maxTokenVersionId = type(uint32).max;
-
-        uint256 tokenId = registry.constructTokenId(canonicalId, maxTokenVersionId);
-
-        // Verify extraction works correctly even at max values
-        assertEq(
-            LibLabel.getCanonicalId(tokenId),
-            canonicalId,
-            "Canonical ID should be extracted correctly"
-        );
-        assertEq(
-            _tokenVersionId(tokenId),
-            maxTokenVersionId,
-            "Max token version should be extracted correctly"
-        );
-
-        // Verify no bit overlap or corruption
-        uint256 reconstructed = registry.constructTokenId(canonicalId, _tokenVersionId(tokenId));
-        assertEq(tokenId, reconstructed, "Reconstructed token ID should match original");
-    }
-
     function test_tokenId_uniqueness_across_labels() public {
         // Register multiple tokens and ensure they have unique IDs
         string[] memory labels = new string[](5);
@@ -1933,116 +1785,6 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
                 assertNotEq(canonicalIds[i], canonicalIds[j], "Canonical IDs should be unique");
             }
         }
-    }
-
-    function test_tokenId_different_versions() public view {
-        // Test that changes to token version ID create different token IDs
-        uint256 canonicalId = LibLabel.labelToCanonicalId("isolationtest");
-
-        // Start with specific values
-        uint32 tokenVersionId1 = 0x12345678;
-        uint256 tokenId1 = registry.constructTokenId(canonicalId, tokenVersionId1);
-
-        // Change token version ID
-        uint32 tokenVersionId2 = 0x87654321;
-        uint256 tokenId2 = registry.constructTokenId(canonicalId, tokenVersionId2);
-
-        // Verify canonical ID is same, versions are different
-        assertEq(LibLabel.getCanonicalId(tokenId1), canonicalId, "Canonical ID 1 should match");
-        assertEq(LibLabel.getCanonicalId(tokenId2), canonicalId, "Canonical ID 2 should match");
-
-        assertEq(_tokenVersionId(tokenId1), tokenVersionId1, "Token version 1 should match");
-        assertEq(_tokenVersionId(tokenId2), tokenVersionId2, "Token version 2 should be different");
-
-        // Token IDs should be different
-        assertNotEq(tokenId1, tokenId2, "Token IDs should be different");
-    }
-
-    function test_tokenId_zero_canonical_id_edge_case() public view {
-        // Test edge case where canonical ID might be zero (though unlikely in practice)
-        uint256 zeroCanonicalId = 0;
-        uint32 tokenVersionId = 42;
-
-        uint256 tokenId = registry.constructTokenId(zeroCanonicalId, tokenVersionId);
-
-        // Verify extraction works with zero canonical ID
-        assertEq(
-            LibLabel.getCanonicalId(tokenId),
-            zeroCanonicalId,
-            "Zero canonical ID should be preserved"
-        );
-        assertEq(_tokenVersionId(tokenId), tokenVersionId, "Token version should be preserved");
-
-        // Token ID should just be the version ID
-        uint256 expectedTokenId = uint256(tokenVersionId);
-        assertEq(tokenId, expectedTokenId, "Token ID should match expected value");
-    }
-
-    function test_resource_token_roundtrip() public {
-        string memory label = "roundtriptest";
-        uint256 tokenId = registry.register(
-            label,
-            user1,
-            registry,
-            address(0),
-            DEFAULT_ROLE_BITMAP,
-            _after(86400)
-        );
-
-        uint256 resourceId = registry.getResource(tokenId);
-        uint256 reconstructedTokenId = registry.getTokenId(resourceId);
-
-        // The reconstructed token ID should equal the original
-        assertEq(reconstructedTokenId, tokenId, "Round-trip conversion should work");
-
-        // Check that the owner is correctly recognized
-        address ownerOfReconstructedTokenId = registry.ownerOf(reconstructedTokenId);
-        assertEq(
-            ownerOfReconstructedTokenId,
-            user1,
-            "Owner should be found for reconstructed token ID"
-        );
-    }
-
-    function test_getNameData_returns_correct_tokenId() public {
-        string memory label = "namedatatest";
-        uint256 registeredTokenId = registry.register(
-            label,
-            user1,
-            registry,
-            address(0),
-            DEFAULT_ROLE_BITMAP,
-            _after(86400)
-        );
-
-        // Trigger regeneration
-        uint256 resourceId = registry.getResource(registeredTokenId);
-        registry.grantRoles(resourceId, RegistryRolesLib.ROLE_RENEW, user2);
-
-        // Get current token ID after regeneration
-        uint256 currentTokenId = registry.getTokenId(resourceId);
-
-        // Use getNameData to retrieve token ID
-        (uint256 retrievedTokenId, IRegistryDatastore.Entry memory entry) = registry.getNameData(
-            label
-        );
-
-        // Should match the current (regenerated) token ID
-        assertEq(retrievedTokenId, currentTokenId, "getNameData should return current token ID");
-        assertNotEq(
-            retrievedTokenId,
-            registeredTokenId,
-            "Should not return original token ID after regeneration"
-        );
-
-        // Verify entry data matches
-        IRegistryDatastore.Entry memory currentEntry = registry.getEntry(currentTokenId);
-        assertEq(
-            entry.tokenVersionId,
-            currentEntry.tokenVersionId,
-            "Entry token version should match"
-        );
-        assertEq(entry.eacVersionId, currentEntry.eacVersionId, "Entry EAC version should match");
     }
 
     // ROLE_CAN_TRANSFER_ADMIN tests
@@ -2079,7 +1821,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         // Transfer should revert
         vm.expectRevert(
-            abi.encodeWithSelector(IStandardRegistry.TransferDisallowed.selector, tokenId, user1)
+            abi.encodeWithSelector(ITokenRegistry.TransferDisallowed.selector, tokenId, user1)
         );
         vm.prank(user1);
         registry.safeTransferFrom(user1, user2, tokenId, 1, "");
@@ -2110,7 +1852,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         // Transfer should now fail
         vm.expectRevert(
-            abi.encodeWithSelector(IStandardRegistry.TransferDisallowed.selector, newTokenId, user2)
+            abi.encodeWithSelector(ITokenRegistry.TransferDisallowed.selector, newTokenId, user2)
         );
         vm.prank(user2);
         registry.safeTransferFrom(user2, user3, newTokenId, 1, "");
@@ -2147,7 +1889,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         // Batch transfer should fail because tokenId2 lacks ROLE_CAN_TRANSFER_ADMIN
         vm.expectRevert(
-            abi.encodeWithSelector(IStandardRegistry.TransferDisallowed.selector, tokenId2, user1)
+            abi.encodeWithSelector(ITokenRegistry.TransferDisallowed.selector, tokenId2, user1)
         );
         vm.prank(user1);
         registry.safeBatchTransferFrom(user1, user2, tokenIds, amounts, "");
@@ -2206,7 +1948,7 @@ contract PermissionedRegistryTest is Test, ERC1155Holder {
 
         // Operator should not be able to transfer without ROLE_CAN_TRANSFER_ADMIN on the owner
         vm.expectRevert(
-            abi.encodeWithSelector(IStandardRegistry.TransferDisallowed.selector, tokenId, user1)
+            abi.encodeWithSelector(ITokenRegistry.TransferDisallowed.selector, tokenId, user1)
         );
         vm.prank(user2);
         registry.safeTransferFrom(user1, user2, tokenId, 1, "");

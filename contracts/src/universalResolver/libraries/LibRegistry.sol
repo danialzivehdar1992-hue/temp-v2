@@ -36,12 +36,12 @@ library LibRegistry {
         if (address(exactRegistry) != address(0)) {
             (string memory label, ) = NameCoder.extractLabel(name, offset);
             // remember the resolver (if it exists)
-            address res = exactRegistry.getResolver(label);
+            address res;
+            (exactRegistry, res) = exactRegistry.findChild(label);
             if (res != address(0)) {
                 resolver = res;
                 resolverOffset = offset;
             }
-            exactRegistry = exactRegistry.getSubregistry(label);
         }
         node = NameCoder.namehash(node, labelHash); // update namehash
     }
@@ -79,11 +79,11 @@ library LibRegistry {
                 parentResolver
             );
             if (address(registry) != address(0)) {
-                address res = registry.getResolver(label);
+                address res;
+                (registry, res) = registry.findChild(label);
                 if (res != address(0)) {
                     resolver = res;
                 }
-                registry = registry.getSubregistry(label);
             }
         }
     }
@@ -106,7 +106,7 @@ library LibRegistry {
         IRegistry parent = findExactRegistry(rootRegistry, name, next);
         if (address(parent) != address(0)) {
             (string memory label, ) = NameCoder.extractLabel(name, offset);
-            exactRegistry = parent.getSubregistry(label);
+            (exactRegistry, ) = parent.findChild(label);
         }
     }
 
@@ -157,8 +157,42 @@ library LibRegistry {
         }
         registry = _findRegistries(name, nextOffset, registries, index + 1);
         if (address(registry) != address(0)) {
-            registry = registry.getSubregistry(label);
+            (registry, ) = registry.findChild(label);
             registries[index] = registry;
         }
+    }
+
+    function findCanonicalName(
+        IRegistry rootRegistry,
+        IRegistry registry
+    ) internal view returns (bytes memory name) {
+        if (address(registry) == address(0)) {
+            return "";
+        }
+        for (;;) {
+            if (address(registry) == address(rootRegistry)) {
+                return abi.encodePacked(name, uint8(0));
+            }
+            (IRegistry parent, string memory label) = registry.getParent();
+            uint256 size = bytes(label).length;
+            if (address(parent) == address(0) || size == 0 || size > 255) {
+                return "";
+            }
+            (IRegistry child, ) = parent.findChild(label);
+            if (address(child) != address(registry)) {
+                return "";
+            }
+            name = abi.encodePacked(name, uint8(size), label);
+            registry = parent;
+        }
+    }
+
+    function isCanonicalName(
+        IRegistry rootRegistry,
+        bytes memory name
+    ) internal view returns (bool) {
+        return
+            keccak256(findCanonicalName(rootRegistry, findExactRegistry(rootRegistry, name, 0))) ==
+            keccak256(name);
     }
 }

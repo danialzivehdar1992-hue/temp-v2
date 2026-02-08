@@ -19,9 +19,8 @@ import {MigrationData} from "../migration/types/MigrationTypes.sol";
 import {IMigratedWrappedNameRegistry} from "./interfaces/IMigratedWrappedNameRegistry.sol";
 import {IPermissionedRegistry} from "./interfaces/IPermissionedRegistry.sol";
 import {IRegistry} from "./interfaces/IRegistry.sol";
-import {IRegistryDatastore} from "./interfaces/IRegistryDatastore.sol";
 import {IRegistryMetadata} from "./interfaces/IRegistryMetadata.sol";
-import {IStandardRegistry} from "./interfaces/IStandardRegistry.sol";
+import {ITokenRegistry} from "./interfaces/ITokenRegistry.sol";
 import {RegistryRolesLib} from "./libraries/RegistryRolesLib.sol";
 import {PermissionedRegistry} from "./PermissionedRegistry.sol";
 
@@ -74,11 +73,10 @@ contract MigratedWrappedNameRegistry is
         INameWrapper nameWrapper,
         IPermissionedRegistry ethRegistry,
         VerifiableFactory factory,
-        IRegistryDatastore datastore,
         IHCAFactoryBasic hcaFactory,
         IRegistryMetadata metadataProvider,
         address fallbackResolver
-    ) PermissionedRegistry(datastore, hcaFactory, metadataProvider, _msgSender(), 0) {
+    ) PermissionedRegistry(hcaFactory, metadataProvider, _msgSender(), 0) {
         NAME_WRAPPER = nameWrapper;
         ETH_REGISTRY = ethRegistry;
         FACTORY = factory;
@@ -175,18 +173,18 @@ contract MigratedWrappedNameRegistry is
 
     /// @inheritdoc PermissionedRegistry
     /// @dev Restore the latest resolver to `FALLBACK_RESOLVER` upon visiting migratable children.
-    function getResolver(
-        string calldata label
-    ) public view override(PermissionedRegistry) returns (address) {
+    function findChild(
+        string memory label
+    ) public view override(PermissionedRegistry) returns (IRegistry subregistry, address resolver) {
+        (subregistry, resolver) = super.findChild(label);
         bytes32 node = NameCoder.namehash(
             NameCoder.namehash(parentDnsEncodedName, 0),
             keccak256(bytes(label))
         );
         (address owner, uint32 fuses, ) = NAME_WRAPPER.getData(uint256(node));
         if (owner != address(this) && (fuses & PARENT_CANNOT_CONTROL) != 0) {
-            return FALLBACK_RESOLVER;
+            resolver = FALLBACK_RESOLVER;
         }
-        return super.getResolver(label);
     }
 
     ////////////////////////////////////////////////////////////////////////
@@ -293,9 +291,9 @@ contract MigratedWrappedNameRegistry is
             dnsEncodedName[grandparentOffset] == 0
         ) {
             // For 2LD: Check that label is NOT registered in ethRegistry
-            IRegistry subregistry = ETH_REGISTRY.getSubregistry(label);
+            (IRegistry subregistry, ) = ETH_REGISTRY.findChild(label);
             if (address(subregistry) != address(0)) {
-                revert IStandardRegistry.NameAlreadyRegistered(label);
+                revert ITokenRegistry.NameNotAvailable(label);
             }
         } else {
             // For 3LD+: Check that parent is wrapped and owned by this contract
@@ -308,9 +306,9 @@ contract MigratedWrappedNameRegistry is
             }
 
             // Also check that the current label is NOT already registered in this registry
-            IRegistry subregistry = this.getSubregistry(label);
+            (IRegistry subregistry, ) = findChild(label);
             if (address(subregistry) != address(0)) {
-                revert IStandardRegistry.NameAlreadyRegistered(label);
+                revert ITokenRegistry.NameNotAvailable(label);
             }
         }
 

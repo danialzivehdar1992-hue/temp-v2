@@ -3,11 +3,10 @@ pragma solidity >=0.8.13;
 
 // solhint-disable no-console, private-vars-leading-underscore, state-visibility, func-name-mixedcase, namechain/ordering, one-contract-per-file
 
-import {IHCAFactoryBasic} from "~src/hca/interfaces/IHCAFactoryBasic.sol";
 import {
     PermissionedRegistry,
-    IRegistryDatastore,
-    IRegistryMetadata
+    IRegistryMetadata,
+    IHCAFactoryBasic
 } from "~src/registry/PermissionedRegistry.sol";
 
 /**
@@ -19,41 +18,39 @@ import {
 contract MockPermissionedRegistry is PermissionedRegistry {
     // Pass through all constructor arguments
     constructor(
-        IRegistryDatastore datastore,
         IHCAFactoryBasic hcaFactory,
         IRegistryMetadata metadata,
         address ownerAddress,
         uint256 ownerRoles
-    ) PermissionedRegistry(datastore, hcaFactory, metadata, ownerAddress, ownerRoles) {}
+    ) PermissionedRegistry(hcaFactory, metadata, ownerAddress, ownerRoles) {}
 
-    /**
-     * @dev Public wrapper for _constructTokenId - for testing only
-     */
-    function constructTokenId(uint256 id, uint32 tokenVersionId) public pure returns (uint256) {
-        IRegistryDatastore.Entry memory entry;
-        entry.tokenVersionId = tokenVersionId;
-        return _constructTokenId(id, entry);
+    // /**
+    //  * @dev Test helper that bypasses admin role restrictions - for testing only
+    //  */
+    // function grantRolesDirect(
+    //     uint256 resource,
+    //     uint256 roleBitmap,
+    //     address account
+    // ) external returns (bool) {
+    //     return _grantRoles(resource, roleBitmap, account, false);
+    // }
+
+    // /**
+    //  * @dev Test helper that bypasses admin role restrictions - for testing only
+    //  */
+    // function revokeRolesDirect(
+    //     uint256 resource,
+    //     uint256 roleBitmap,
+    //     address account
+    // ) external returns (bool) {
+    //     return _revokeRoles(resource, roleBitmap, account, false);
+    // }
+
+    function getEacVersionId(uint256 anyId) external view returns (uint32) {
+        return _entry(anyId).eacVersionId;
     }
 
-    /**
-     * @dev Test helper that bypasses admin role restrictions - for testing only
-     */
-    function grantRolesDirect(
-        uint256 resource,
-        uint256 roleBitmap,
-        address account
-    ) external returns (bool) {
-        return _grantRoles(resource, roleBitmap, account, false);
-    }
-
-    /**
-     * @dev Test helper that bypasses admin role restrictions - for testing only
-     */
-    function revokeRolesDirect(
-        uint256 resource,
-        uint256 roleBitmap,
-        address account
-    ) external returns (bool) {
-        return _revokeRoles(resource, roleBitmap, account, false);
+    function getTokenVersionId(uint256 anyId) external view returns (uint32) {
+        return _entry(anyId).tokenVersionId;
     }
 }

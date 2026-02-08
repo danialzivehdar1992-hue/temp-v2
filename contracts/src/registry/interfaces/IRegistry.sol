@@ -1,59 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.13;
 
-import {IERC1155Singleton} from "../../erc1155/interfaces/IERC1155Singleton.sol";
+interface IRegistry {
+    event ParentChanged(IRegistry indexed parent, string label);
 
-import {IRegistry} from "./IRegistry.sol";
+    /// @notice Find the registry and resolver for a subdomain.
+    ///
+    /// @param label The subdomain.
+    ///
+    /// @return subregistry The registry address.
+    /// @return resolver The resolver address.
+    function findChild(
+        string calldata label
+    ) external view returns (IRegistry subregistry, address resolver);
 
-interface IRegistry is IERC1155Singleton {
-    ////////////////////////////////////////////////////////////////////////
-    // Events
-    ////////////////////////////////////////////////////////////////////////
-
-    /// @notice Subdomain was registered.
-    /// @dev SHOULD be emitted when a new label is registered.
-    event NameRegistered(
-        uint256 indexed tokenId,
-        string label,
-        uint64 expiry,
-        address registeredBy
-    );
-
-    /// @notice Subdomain was deleted.
-    event NameBurned(uint256 indexed tokenId, address burnedBy);
-
-    /// @notice Expiry was changed.
-    event ExpiryUpdated(uint256 indexed tokenId, uint64 newExpiry, address changedBy);
-
-    /// @notice Subregistry was changed.
-    event SubregistryUpdated(uint256 indexed tokenId, IRegistry subregistry);
-
-    /// @notice Resolver was changed.
-    event ResolverUpdated(uint256 indexed tokenId, address resolver);
-
-    /// @notice Token was regenerated with a new token ID.
-    ///         This occurs when roles are granted or revoked to maintain ERC1155 compliance.
-    event TokenRegenerated(
-        uint256 indexed oldTokenId,
-        uint256 indexed newTokenId,
-        uint256 resource
-    );
-
-    ////////////////////////////////////////////////////////////////////////
-    // Functions
-    ////////////////////////////////////////////////////////////////////////
-
-    /**
-     * @dev Fetches the registry for a subdomain.
-     * @param label The label to resolve.
-     * @return The address of the registry for this subdomain, or `address(0)` if none exists.
-     */
-    function getSubregistry(string calldata label) external view returns (IRegistry);
-
-    /**
-     * @dev Fetches the resolver responsible for the specified label.
-     * @param label The label to fetch a resolver for.
-     * @return resolver The address of a resolver responsible for this name, or `address(0)` if none exists.
-     */
-    function getResolver(string calldata label) external view returns (address);
+    /// @notice Get canonical "home" of this registry.
+    ///
+    /// @return parent The canonical parent of this registry.
+    /// @return label The canonical subdomain of this registry.
+    function getParent() external view returns (IRegistry parent, string memory label);
 }

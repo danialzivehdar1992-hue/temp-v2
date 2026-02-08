@@ -71,9 +71,9 @@ interface IETHRegistrar is IRentPriceOracle {
     /// @dev Error selector: `0xf2b502e2`
     error NameNotRegistered(string label);
 
-    /// @notice `label is already registered.
-    /// @dev Error selector: `0x6dbb87d0`
-    error NameAlreadyRegistered(string label);
+    /// @notice `label is not available.
+    /// @dev Error selector: `0x477707e8`
+    error NameNotAvailable(string label);
 
     /// @notice `duration` less than `minDuration`.
     /// @dev Error selector: `0xa096b844`
@@ -145,13 +145,6 @@ interface IETHRegistrar is IRentPriceOracle {
         IERC20 paymentToken,
         bytes32 referrer
     ) external;
-
-    /// @notice Check if `label` is available for registration.
-    ///
-    /// @param label The name to check.
-    ///
-    /// @return `true` if the `label` is available.
-    function isAvailable(string memory label) external view returns (bool);
 
     /// @notice Get timestamp of `commitment`.
     ///

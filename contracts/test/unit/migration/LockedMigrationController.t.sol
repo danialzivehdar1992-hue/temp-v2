@@ -28,7 +28,6 @@ import {IRegistry} from "~src/registry/interfaces/IRegistry.sol";
 import {IRegistryMetadata} from "~src/registry/interfaces/IRegistryMetadata.sol";
 import {RegistryRolesLib} from "~src/registry/libraries/RegistryRolesLib.sol";
 import {PermissionedRegistry} from "~src/registry/PermissionedRegistry.sol";
-import {RegistryDatastore} from "~src/registry/RegistryDatastore.sol";
 import {LockedMigrationController} from "~src/migration/LockedMigrationController.sol";
 import {TransferData, MigrationData} from "~src/migration/types/MigrationTypes.sol";
 import {LockedNamesLib} from "~src/migration/libraries/LockedNamesLib.sol";
@@ -81,7 +80,6 @@ contract MockRegistryMetadata is IRegistryMetadata {
 contract LockedMigrationControllerTest is Test, ERC1155Holder {
     LockedMigrationController controller;
     MockNameWrapper nameWrapper;
-    RegistryDatastore datastore;
     MockRegistryMetadata metadata;
     PermissionedRegistry registry;
     VerifiableFactory factory;
@@ -97,7 +95,6 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
 
     function setUp() public {
         nameWrapper = new MockNameWrapper();
-        datastore = new RegistryDatastore();
         metadata = new MockRegistryMetadata();
         hcaFactory = new MockHCAFactoryBasic();
 
@@ -105,19 +102,12 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         factory = new VerifiableFactory();
 
         // Setup eth registry
-        registry = new PermissionedRegistry(
-            datastore,
-            hcaFactory,
-            metadata,
-            owner,
-            EACBaseRolesLib.ALL_ROLES
-        );
+        registry = new PermissionedRegistry(hcaFactory, metadata, owner, EACBaseRolesLib.ALL_ROLES);
 
         implementation = new MigratedWrappedNameRegistry(
             INameWrapper(address(nameWrapper)),
             IPermissionedRegistry(address(registry)),
             factory,
-            datastore,
             hcaFactory,
             metadata,
             fallbackResolver
@@ -131,10 +121,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         );
 
         // Grant controller permission to register names
-        registry.grantRootRoles(
-            RegistryRolesLib.ROLE_REGISTRAR,
-            address(controller)
-        );
+        registry.grantRootRoles(RegistryRolesLib.ROLE_REGISTRAR, address(controller));
 
         testTokenId = uint256(keccak256(bytes(testLabel)));
     }
@@ -205,7 +192,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check roles
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         uint256 resource = registry.getResource(registeredTokenId);
         uint256 userRoles = registry.roles(resource, user);
 
@@ -385,7 +372,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
                     roleBitmap: RegistryRolesLib.ROLE_SET_RESOLVER,
                     expires: uint64(block.timestamp + 86400 * (i + 1))
                 }),
-                    salt: uint256(keccak256(abi.encodePacked(labels[i], block.timestamp, i)))
+                salt: uint256(keccak256(abi.encodePacked(labels[i], block.timestamp, i)))
             });
         }
 
@@ -447,13 +434,13 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Verify a subregistry was created
-        address actualSubregistry = address(registry.getSubregistry(testLabel));
-        assertTrue(actualSubregistry != address(0), "Subregistry should be created");
+        (IRegistry actualSubregistry, ) = registry.findChild(testLabel);
+        assertTrue(address(actualSubregistry) != address(0), "Subregistry should be created");
 
         // Verify it's a proxy pointing to our implementation
         // The factory creates a proxy, so we can verify it's pointing to the right implementation
         MigratedWrappedNameRegistry migratedRegistry = MigratedWrappedNameRegistry(
-            actualSubregistry
+            address(actualSubregistry)
         );
         assertEq(
             migratedRegistry.parentDnsEncodedName(),
@@ -489,7 +476,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check roles
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         uint256 resource = registry.getResource(registeredTokenId);
         uint256 userRoles = registry.roles(resource, user);
 
@@ -553,7 +540,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check roles
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         uint256 resource = registry.getResource(registeredTokenId);
         uint256 userRoles = registry.roles(resource, user);
 
@@ -603,7 +590,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check roles
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         uint256 resource = registry.getResource(registeredTokenId);
         uint256 userRoles = registry.roles(resource, user);
 
@@ -666,7 +653,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check roles
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         uint256 resource = registry.getResource(registeredTokenId);
         uint256 userRoles = registry.roles(resource, user);
 
@@ -756,7 +743,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         );
 
         // Verify name was successfully migrated despite all fuses being burnt after
-        (uint256 registeredTokenId, ) = registry.getNameData(testLabel);
+        uint256 registeredTokenId = registry.findTokenId(testLabel);
         assertTrue(registeredTokenId != 0, "Name should be successfully registered");
     }
 
@@ -811,7 +798,7 @@ contract LockedMigrationControllerTest is Test, ERC1155Holder {
         controller.onERC1155Received(owner, owner, testTokenId, 1, data);
 
         // Get the registered name and check subregistry owner
-        IRegistry subregistry = registry.getSubregistry(testLabel);
+        (IRegistry subregistry, ) = registry.findChild(testLabel);
 
         // Verify the user is the owner of the subregistry with only UPGRADE roles
         IPermissionedRegistry subRegistry = IPermissionedRegistry(address(subregistry));

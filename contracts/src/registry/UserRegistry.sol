@@ -7,7 +7,6 @@ import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/U
 import {InvalidOwner} from "../CommonErrors.sol";
 import {IHCAFactoryBasic} from "../hca/interfaces/IHCAFactoryBasic.sol";
 
-import {IRegistryDatastore} from "./interfaces/IRegistryDatastore.sol";
 import {IRegistryMetadata} from "./interfaces/IRegistryMetadata.sol";
 import {PermissionedRegistry} from "./PermissionedRegistry.sol";
 
@@ -29,10 +28,9 @@ contract UserRegistry is Initializable, PermissionedRegistry, UUPSUpgradeable {
     ////////////////////////////////////////////////////////////////////////
 
     constructor(
-        IRegistryDatastore datastore_,
         IHCAFactoryBasic hcaFactory_,
         IRegistryMetadata metadataProvider_
-    ) PermissionedRegistry(datastore_, hcaFactory_, metadataProvider_, _msgSender(), 0) {
+    ) PermissionedRegistry(hcaFactory_, metadataProvider_, _msgSender(), 0) {
         // This disables initialization for the implementation contract
         _disableInitializers();
     }

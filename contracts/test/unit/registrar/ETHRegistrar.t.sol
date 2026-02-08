@@ -17,7 +17,6 @@ import {
 } from "~src/access-control/EnhancedAccessControl.sol";
 import {RegistryRolesLib} from "~src/registry/libraries/RegistryRolesLib.sol";
 import {PermissionedRegistry} from "~src/registry/PermissionedRegistry.sol";
-import {RegistryDatastore} from "~src/registry/RegistryDatastore.sol";
 import {SimpleRegistryMetadata} from "~src/registry/SimpleRegistryMetadata.sol";
 import {LibLabel} from "~src/utils/LibLabel.sol";
 import {
@@ -60,7 +59,6 @@ contract ETHRegistrarTest is Test {
     function setUp() external {
         hcaFactory = new MockHCAFactoryBasic();
         ethRegistry = new PermissionedRegistry(
-            new RegistryDatastore(),
             hcaFactory,
             new SimpleRegistryMetadata(hcaFactory),
             address(this),
@@ -341,9 +339,10 @@ contract ETHRegistrarTest is Test {
 
     function test_isAvailable() external {
         RegisterArgs memory args = _defaultRegisterArgs();
-        assertTrue(ethRegistrar.isAvailable(args.label), "before");
+        uint256 anyId = uint256(keccak256(bytes(args.label)));
+        assertTrue(ethRegistry.getState(anyId).available, "before");
         this._register(args);
-        assertFalse(ethRegistrar.isAvailable(args.label), "after");
+        assertFalse(ethRegistry.getState(anyId).available, "after");
     }
 
     function test_register() external {
@@ -467,7 +466,7 @@ contract ETHRegistrarTest is Test {
         RegisterArgs memory args = _defaultRegisterArgs();
         this._register(args);
         vm.expectRevert(
-            abi.encodeWithSelector(IETHRegistrar.NameAlreadyRegistered.selector, args.label)
+            abi.encodeWithSelector(IETHRegistrar.NameNotAvailable.selector, args.label)
         );
         this._register(args);
     }

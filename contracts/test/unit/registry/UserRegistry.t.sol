@@ -9,15 +9,11 @@ import {VerifiableFactory} from "@ensdomains/verifiable-factory/VerifiableFactor
 import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol";
 
 import {EACBaseRolesLib} from "~src/access-control/EnhancedAccessControl.sol";
-import {
-    IEnhancedAccessControl
-} from "~src/access-control/interfaces/IEnhancedAccessControl.sol";
+import {IEnhancedAccessControl} from "~src/access-control/interfaces/IEnhancedAccessControl.sol";
 import {IHCAFactoryBasic} from "~src/hca/interfaces/IHCAFactoryBasic.sol";
 import {IRegistry} from "~src/registry/interfaces/IRegistry.sol";
-import {IRegistryDatastore} from "~src/registry/interfaces/IRegistryDatastore.sol";
 import {IRegistryMetadata} from "~src/registry/interfaces/IRegistryMetadata.sol";
 import {RegistryRolesLib} from "~src/registry/libraries/RegistryRolesLib.sol";
-import {RegistryDatastore} from "~src/registry/RegistryDatastore.sol";
 import {SimpleRegistryMetadata} from "~src/registry/SimpleRegistryMetadata.sol";
 import {UserRegistry} from "~src/registry/UserRegistry.sol";
 import {MockHCAFactoryBasic} from "~test/mocks/MockHCAFactoryBasic.sol";
@@ -32,7 +28,6 @@ contract UserRegistryTest is Test, ERC1155Holder {
 
     // Contracts
     VerifiableFactory factory;
-    RegistryDatastore datastore;
     MockHCAFactoryBasic hcaFactory;
     SimpleRegistryMetadata metadata;
     UserRegistry implementation;
@@ -47,9 +42,6 @@ contract UserRegistryTest is Test, ERC1155Holder {
         // Deploy the factory
         factory = new VerifiableFactory();
 
-        // Deploy the datastore
-        datastore = new RegistryDatastore();
-
         // Deploy the HCA factory
         hcaFactory = new MockHCAFactoryBasic();
 
@@ -57,7 +49,7 @@ contract UserRegistryTest is Test, ERC1155Holder {
         metadata = new SimpleRegistryMetadata(hcaFactory);
 
         // Deploy the implementation
-        implementation = new UserRegistry(datastore, hcaFactory, metadata);
+        implementation = new UserRegistry(hcaFactory, metadata);
 
         // Create initialization data
         bytes memory initData = abi.encodeCall(
@@ -94,9 +86,6 @@ contract UserRegistryTest is Test, ERC1155Holder {
             proxy.hasRootRoles(RegistryRolesLib.ROLE_REGISTRAR, user1),
             "User1 should not have registrar role"
         );
-
-        // Verify proxy returns the correct registry datastore
-        assertEq(address(proxy.DATASTORE()), address(datastore), "Datastore should match");
 
         // Verify proxy supports required interfaces
         assertTrue(
@@ -136,12 +125,9 @@ contract UserRegistryTest is Test, ERC1155Holder {
         );
 
         // Verify the domain resolves correctly
-        assertEq(
-            address(proxy.getSubregistry(label)),
-            address(0),
-            "Subregistry should be zero address"
-        );
-        assertEq(proxy.getResolver(label), address(0), "Resolver should be zero address");
+        (IRegistry subregistry, address resolver) = proxy.findChild(label);
+        assertEq(address(subregistry), address(0), "Subregistry should be zero address");
+        assertEq(resolver, address(0), "Resolver should be zero address");
     }
 
     function test_domain_management() public {
@@ -157,23 +143,21 @@ contract UserRegistryTest is Test, ERC1155Holder {
         );
 
         // User1 sets a resolver
-        address resolver = address(0x123);
+        address newResolver = address(0x123);
         vm.prank(user1);
-        proxy.setResolver(tokenId, resolver);
+        proxy.setResolver(tokenId, newResolver);
 
         // Verify resolver was set
-        assertEq(proxy.getResolver("mdtdomain"), resolver, "Resolver should be set");
+        (, address resolver) = proxy.findChild("mdtdomain");
+        assertEq(resolver, newResolver, "Resolver should be set");
 
         // User1 sets a subregistry
         vm.prank(user1);
         proxy.setSubregistry(tokenId, IRegistry(address(0x456)));
 
         // Verify subregistry was set
-        assertEq(
-            address(proxy.getSubregistry("mdtdomain")),
-            address(0x456),
-            "Subregistry should be set"
-        );
+        (IRegistry subregistry, ) = proxy.findChild("mdtdomain");
+        assertEq(address(subregistry), address(0x456), "Subregistry should be set");
     }
 
     function test_role_management() public {
@@ -263,11 +247,7 @@ contract UserRegistryTest is Test, ERC1155Holder {
     // Test for contract upgradeability
     function test_upgrade() public {
         // Deploy a new implementation
-        UserRegistryV2Mock newImplementation = new UserRegistryV2Mock(
-            datastore,
-            hcaFactory,
-            metadata
-        );
+        UserRegistryV2Mock newImplementation = new UserRegistryV2Mock(hcaFactory, metadata);
 
         // Upgrade the proxy
         vm.prank(admin);
@@ -280,11 +260,7 @@ contract UserRegistryTest is Test, ERC1155Holder {
 
     function test_Revert_unauthorized_upgrade() public {
         // Deploy a new implementation
-        UserRegistryV2Mock newImplementation = new UserRegistryV2Mock(
-            datastore,
-            hcaFactory,
-            metadata
-        );
+        UserRegistryV2Mock newImplementation = new UserRegistryV2Mock(hcaFactory, metadata);
 
         // User1 tries to upgrade without permission
         vm.expectRevert(
@@ -319,11 +295,9 @@ contract UserRegistryTest is Test, ERC1155Holder {
 
         // Verify domain is expired
         assertEq(proxy.ownerOf(tokenId), address(0), "Expired domain should have no owner");
-        assertEq(
-            address(proxy.getSubregistry("expiredomain")),
-            address(0),
-            "Expired domain should have no subregistry"
-        );
+
+        (IRegistry subregistry, ) = proxy.findChild("expiredomain");
+        assertEq(address(subregistry), address(0), "Expired domain should have no subregistry");
 
         // Should be able to register it again
         vm.prank(admin);
@@ -344,10 +318,9 @@ contract UserRegistryTest is Test, ERC1155Holder {
 // Mock V2 contract for testing upgrades
 contract UserRegistryV2Mock is UserRegistry {
     constructor(
-        IRegistryDatastore _datastore,
         IHCAFactoryBasic _hcaFactory,
         IRegistryMetadata _metadataProvider
-    ) UserRegistry(_datastore, _hcaFactory, _metadataProvider) {}
+    ) UserRegistry(_hcaFactory, _metadataProvider) {}
     function version() public pure returns (uint256) {
         return 2;
     }

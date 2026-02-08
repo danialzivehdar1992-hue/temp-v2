@@ -16,11 +16,13 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {EACBaseRolesLib} from "~src/access-control/EnhancedAccessControl.sol";
 import {UnauthorizedCaller} from "~src/CommonErrors.sol";
-import {IPermissionedRegistry} from "~src/registry/interfaces/IPermissionedRegistry.sol";
 import {IRegistryMetadata} from "~src/registry/interfaces/IRegistryMetadata.sol";
 import {RegistryRolesLib} from "~src/registry/libraries/RegistryRolesLib.sol";
-import {PermissionedRegistry} from "~src/registry/PermissionedRegistry.sol";
-import {RegistryDatastore} from "~src/registry/RegistryDatastore.sol";
+import {
+    PermissionedRegistry,
+    IPermissionedRegistry,
+    IRegistry
+} from "~src/registry/PermissionedRegistry.sol";
 import {UnlockedMigrationController} from "~src/migration/UnlockedMigrationController.sol";
 import {TransferData, MigrationData} from "~src/migration/types/MigrationTypes.sol";
 import {MockHCAFactoryBasic} from "~test/mocks/MockHCAFactoryBasic.sol";
@@ -104,7 +106,6 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
     UnlockedMigrationController migrationController;
 
     // Real components for testing
-    RegistryDatastore datastore;
     PermissionedRegistry registry;
     MockRegistryMetadata registryMetadata;
     MockHCAFactoryBasic hcaFactory;
@@ -157,13 +158,11 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
 
     function setUp() public {
         // Set up real registry infrastructure
-        datastore = new RegistryDatastore();
         hcaFactory = new MockHCAFactoryBasic();
         registryMetadata = new MockRegistryMetadata();
 
         // Deploy the real registry
         registry = new PermissionedRegistry(
-            datastore,
             hcaFactory,
             registryMetadata,
             address(this),
@@ -183,8 +182,7 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
 
         // Grant necessary roles to the migration controller
         registry.grantRootRoles(
-            RegistryRolesLib.ROLE_REGISTRAR |
-                RegistryRolesLib.ROLE_RENEW,
+            RegistryRolesLib.ROLE_REGISTRAR | RegistryRolesLib.ROLE_RENEW,
             address(migrationController)
         );
 
@@ -193,10 +191,7 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
 
     function test_constructor() public view {
         assertEq(address(migrationController.NAME_WRAPPER()), address(nameWrapper));
-        assertEq(
-            address(migrationController.ETH_REGISTRY()),
-            address(registry)
-        );
+        assertEq(address(migrationController.ETH_REGISTRY()), address(registry));
     }
 
     function test_migrateUnwrappedEthName() public {
@@ -221,7 +216,8 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
         assertEq(ethRegistrarV1.ownerOf(testTokenId), address(migrationController));
 
         // Verify the name was registered in the ETH registry
-        assertEq(address(registry.getSubregistry(testLabel)) != address(0), true);
+        (IRegistry subregistry, ) = registry.findChild(testLabel);
+        assertEq(address(subregistry) != address(0), true);
     }
 
     function test_Revert_migrateUnwrappedEthName_wrong_caller() public {
@@ -273,7 +269,8 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
         nameWrapper.safeTransferFrom(user, address(migrationController), testTokenId, 1, data);
 
         // Verify the name was registered in the ETH registry
-        assertEq(address(registry.getSubregistry(testLabel)) != address(0), true);
+        (IRegistry subregistry, ) = registry.findChild(testLabel);
+        assertNotEq(address(subregistry), address(0));
     }
 
     function test_migrateWrappedEthName_batch_allUnlocked() public {
@@ -317,8 +314,11 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
         );
 
         // Verify both names were registered in the ETH registry
-        assertEq(address(registry.getSubregistry(label1)) != address(0), true);
-        assertEq(address(registry.getSubregistry(label2)) != address(0), true);
+
+        (IRegistry subregistry, ) = registry.findChild(label1);
+        assertNotEq(address(subregistry), address(0), "label1");
+        (subregistry, ) = registry.findChild(label2);
+        assertNotEq(address(subregistry), address(0), "label2");
     }
 
     function test_Revert_migrateWrappedEthName_single_locked() public {
@@ -531,7 +531,7 @@ contract UnlockedMigrationControllerTest is Test, ERC1155Holder, ERC721Holder {
         amounts[0] = 1;
         amounts[1] = 1;
 
-        // Create migration data with one wrong label  
+        // Create migration data with one wrong label
         MigrationData[] memory migrationDataArray = new MigrationData[](2);
         migrationDataArray[0] = _createMigrationDataWithExpiry(label1);
         migrationDataArray[0].transferData.owner = user;

@@ -8,7 +8,6 @@ import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IPermissionedRegistry} from "../registry/interfaces/IPermissionedRegistry.sol";
-import {IRegistryDatastore} from "../registry/interfaces/IRegistryDatastore.sol";
 
 import {IRentPriceOracle} from "./interfaces/IRentPriceOracle.sol";
 import {LibHalving} from "./libraries/LibHalving.sol";
@@ -308,9 +307,10 @@ contract StandardRentPriceOracle is ERC165, Ownable, IRentPriceOracle {
         if (baseUnits == 0) {
             revert NotValid(label);
         }
-        (uint256 tokenId, IRegistryDatastore.Entry memory entry) = REGISTRY.getNameData(label);
-        uint64 oldExpiry = entry.expiry;
-        uint64 t = oldExpiry > block.timestamp ? oldExpiry - uint64(block.timestamp) : 0;
+        IPermissionedRegistry.State memory state = REGISTRY.getState(
+            uint256(keccak256(bytes(label)))
+        );
+        uint64 t = state.available ? 0 : state.expiry - uint64(block.timestamp);
         baseUnits -= Math.mulDiv(
             baseUnits,
             integratedDiscount(t + duration) - integratedDiscount(t),
@@ -319,8 +319,8 @@ contract StandardRentPriceOracle is ERC165, Ownable, IRentPriceOracle {
         uint256 premiumUnits;
         if (owner != address(0)) {
             // prior owner pays no premium
-            if (owner != REGISTRY.latestOwnerOf(tokenId)) {
-                premiumUnits = premiumPrice(oldExpiry);
+            if (owner != state.owner) {
+                premiumUnits = premiumPrice(state.expiry);
             }
         }
         // reverts on overflow
